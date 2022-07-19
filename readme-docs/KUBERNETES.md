@@ -47,11 +47,6 @@ cd django-DefectDojo
 minikube start
 minikube addons enable ingress
 ```
-Helm <= v2
-```zsh
-helm init
-helm repo update
-```
 
 Helm >= v3
 ```zsh
@@ -84,21 +79,6 @@ DJANGO_INGRESS_ACTIVATE_TLS=false
 ```
 
 Warning: Use the `createSecret*=true` flags only upon first install. For re-installs, see `§Re-install the chart`
-
-Helm <= v2:
-
-```zsh
-helm install \
-  ./helm/defectdojo \
-  --name=defectdojo \
-  --set django.ingress.enabled=${DJANGO_INGRESS_ENABLED} \
-  --set django.ingress.activateTLS=${DJANGO_INGRESS_ACTIVATE_TLS} \
-  --set createSecret=true \
-  --set createRabbitMqSecret=true \
-  --set createRedisSecret=true \
-  --set createMysqlSecret=true \
-  --set createPostgresqlSecret=true
-```
 
 Helm >= v3:
 
@@ -283,8 +263,8 @@ For more detail how how to create proper PVC see [example](https://github.com/De
 ```zsh
 # Install Helm chart. Choose a host name that matches the certificate above
 helm install \
+  defectdojo \
   ./helm/defectdojo \
-  --name=defectdojo \
   --namespace="${K8S_NAMESPACE}" \
   --set host="defectdojo.${TLS_CERT_DOMAIN}" \
   --set django.ingress.secretName="minikube-tls" \
@@ -296,8 +276,8 @@ helm install \
 
 # For high availability deploy multiple instances of Django, Celery and RabbitMQ
 helm install \
+  defectdojo \
   ./helm/defectdojo \
-  --name=defectdojo \
   --namespace="${K8S_NAMESPACE}" \
   --set host="defectdojo.${TLS_CERT_DOMAIN}" \
   --set django.ingress.secretName="minikube-tls" \
@@ -313,8 +293,8 @@ helm install \
 # Run highly available PostgreSQL cluster instead of MySQL - recommended setup
 # for production environment.
 helm install \
+  defectdojo \
   ./helm/defectdojo \
-  --name=defectdojo \
   --namespace="${K8S_NAMESPACE}" \
   --set host="defectdojo.${TLS_CERT_DOMAIN}" \
   --set django.replicas=3 \
@@ -338,11 +318,7 @@ helm install \
 # To prevent recreating the secret, add --set createSecret=false` to your
 # command.
 
-# Run test. If there are any errors, re-run the command without `--cleanup` and
-# inspect the test container.
-# helm 2
-helm test defectdojo --cleanup
-# helm 3
+# Run test.
 helm test defectdojo
 
 # Navigate to <https://defectdojo.default.minikube.local>.
@@ -370,6 +346,27 @@ It's possible to enable Nginx prometheus exporter by setting `--set monitoring.e
 
 ## Useful stuff
 
+### Setting your own domain
+The `site_url` in values.yaml controls what domain is configured in Django, and also what the celery workers will put as links in Jira tickets for example.
+Set this to your `https://<yourdomain>` in values.yaml
+
+### Multiple Hostnames
+Django requires a list of all hostnames that are valid for requests.
+You can add additional hostnames via helm or values file as an array.
+This helps if you have a local service submitting reports to defectDojo using
+the namespace name (say defectdojo.scans) instead of the TLD name used in a browser.
+
+In your helm install simply pass them as a defined array, for example:
+
+`--set "alternativeHosts={defectdojo.default,localhost,defectdojo.example.com}"`
+
+This will also work with shell inserted variables:
+
+` --set "alternativeHosts={defectdojo.${TLS_CERT_DOMAIN},localhost}"`
+
+You will still need to set a host value as well.
+
+### kubectl commands
 ```zsh
 # View logs of a specific pod
 kubectl logs $(kubectl get pod --selector=defectdojo.org/component=${POD} \
@@ -387,12 +384,6 @@ kubectl exec -it $(kubectl get pod --selector=defectdojo.org/component=${POD} \
 ```
 
 ### Clean up Kubernetes
-Helm <= v2
-```zsh
-# Uninstall Helm chart
-helm delete defectdojo --purge
-```
-
 Helm >= v3
 ```
 helm uninstall defectdojo

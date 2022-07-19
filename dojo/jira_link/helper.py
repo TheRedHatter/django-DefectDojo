@@ -5,6 +5,7 @@ import io
 import json
 import requests
 from django.conf import settings
+from django.template import TemplateDoesNotExist
 from django.template.loader import render_to_string
 from django.utils import timezone
 from jira import JIRA
@@ -456,7 +457,7 @@ def log_jira_alert(error, obj):
         event='jira_update',
         title='Error pushing to JIRA ' + '(' + truncate_with_dots(prod_name(obj), 25) + ')',
         description=to_str_typed(obj) + ', ' + error,
-        url=obj.get_absolute_url,
+        url=obj.get_absolute_url(),
         icon='bullseye',
         source='Push to JIRA',
         obj=obj)
@@ -719,6 +720,10 @@ def add_jira_issue(obj, *args, **kwargs):
 
         logger.info('Created the following jira issue for %d:%s', obj.id, to_str_typed(obj))
         return True
+    except TemplateDoesNotExist as e:
+        logger.exception(e)
+        log_jira_alert(str(e), obj)
+        return False
     except JIRAError as e:
         logger.exception(e)
         logger.error("jira_meta for project: %s and url: %s meta: %s", jira_project.project_key, jira_project.jira_instance.url, json.dumps(meta, indent=4))  # this is None safe
@@ -1028,7 +1033,7 @@ def jira_check_attachment(issue, source_file_name):
 @dojo_async_task
 @app.task
 @dojo_model_from_id(model=Engagement)
-def close_epic(eng, push_to_jira):
+def close_epic(eng, push_to_jira, **kwargs):
     engagement = eng
     if not is_jira_enabled():
         return False
@@ -1070,7 +1075,7 @@ def close_epic(eng, push_to_jira):
 @dojo_async_task
 @app.task
 @dojo_model_from_id(model=Engagement)
-def update_epic(engagement):
+def update_epic(engagement, **kwargs):
     logger.debug('trying to update jira EPIC for %d:%s', engagement.id, engagement.name)
 
     if not is_jira_configured_and_enabled(engagement):
@@ -1101,7 +1106,7 @@ def update_epic(engagement):
 @dojo_async_task
 @app.task
 @dojo_model_from_id(model=Engagement)
-def add_epic(engagement):
+def add_epic(engagement, **kwargs):
     logger.debug('trying to create a new jira EPIC for %d:%s', engagement.id, engagement.name)
 
     if not is_jira_configured_and_enabled(engagement):
@@ -1175,7 +1180,7 @@ def jira_get_issue(jira_project, issue_key):
 @app.task
 @dojo_model_from_id(model=Notes, parameter=1)
 @dojo_model_from_id
-def add_comment(obj, note, force_push=False):
+def add_comment(obj, note, force_push=False, **kwargs):
     if not is_jira_configured_and_enabled(obj):
         return False
 

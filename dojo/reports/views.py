@@ -10,7 +10,6 @@ from datetime import datetime
 
 from dateutil.relativedelta import relativedelta
 from django.conf import settings
-from django.core.exceptions import PermissionDenied
 from django.http import Http404, HttpResponseForbidden, HttpResponse, QueryDict
 from django.shortcuts import render, get_object_or_404
 from django.utils import timezone
@@ -335,7 +334,7 @@ def product_endpoint_report(request, pid):
         else:
             raise Http404()
 
-    product_tab = Product_Tab(product.id, "Product Endpoint Report", tab="endpoints")
+    product_tab = Product_Tab(product, "Product Endpoint Report", tab="endpoints")
     return render(request,
                   'dojo/request_endpoint_report.html',
                   {"endpoints": paged_endpoints,
@@ -373,12 +372,14 @@ def generate_report(request, obj, host_view=False):
         user_has_permission_or_403(request.user, obj, Permissions.Test_View)
     elif type(obj).__name__ == "Endpoint":
         user_has_permission_or_403(request.user, obj, Permissions.Endpoint_View)
-    elif type(obj).__name__ == "QuerySet" or type(obj).__name__ == "CastTaggedQuerySet":
+    elif type(obj).__name__ == "QuerySet" or type(obj).__name__ == "CastTaggedQuerySet" or type(obj).__name__ == "TagulousCastTaggedQuerySet":
         # authorization taken care of by only selecting findings from product user is authed to see
         pass
     else:
-        if not request.user.is_staff:
-            raise PermissionDenied
+        if obj is None:
+            raise Exception('No object is given to generate report for')
+        else:
+            raise Exception(f'Report cannot be generated for object of type {type(obj).__name__}')
 
     report_format = request.GET.get('report_type', 'AsciiDoc')
     include_finding_notes = int(request.GET.get('include_finding_notes', 0))
@@ -647,18 +648,18 @@ def generate_report(request, obj, host_view=False):
 
     product_tab = None
     if engagement:
-        product_tab = Product_Tab(engagement.product.id, title="Engagement Report", tab="engagements")
+        product_tab = Product_Tab(engagement.product, title="Engagement Report", tab="engagements")
         product_tab.setEngagement(engagement)
     elif test:
-        product_tab = Product_Tab(test.engagement.product.id, title="Test Report", tab="engagements")
+        product_tab = Product_Tab(test.engagement.product, title="Test Report", tab="engagements")
         product_tab.setEngagement(test.engagement)
     elif product:
-        product_tab = Product_Tab(product.id, title="Product Report", tab="findings")
+        product_tab = Product_Tab(product, title="Product Report", tab="findings")
     elif endpoints:
         if host_view:
-            product_tab = Product_Tab(endpoint.product.id, title="Endpoint Host Report", tab="endpoints")
+            product_tab = Product_Tab(endpoint.product, title="Endpoint Host Report", tab="endpoints")
         else:
-            product_tab = Product_Tab(endpoint.product.id, title="Endpoint Report", tab="endpoints")
+            product_tab = Product_Tab(endpoint.product, title="Endpoint Report", tab="endpoints")
 
     return render(request, 'dojo/request_report.html',
                   {'product_type': product_type,
@@ -820,7 +821,8 @@ def get_excludes():
     return ['SEVERITIES', 'age', 'github_issue', 'jira_issue', 'objects', 'risk_acceptance',
     'test__engagement__product__authorized_group', 'test__engagement__product__member',
     'test__engagement__product__prod_type__authorized_group', 'test__engagement__product__prod_type__member',
-    'unsaved_endpoints']
+    'unsaved_endpoints', 'unsaved_vulnerability_ids', 'unsaved_files', 'unsaved_request', 'unsaved_response',
+    'unsaved_tags', 'vulnerability_ids', 'cve']
 
 
 def get_foreign_keys():
@@ -850,6 +852,7 @@ def csv_export(request):
             fields.append('product_id')
             fields.append('product')
             fields.append('endpoints')
+            fields.append('vulnerability_ids')
 
             writer.writerow(fields)
 
@@ -882,6 +885,20 @@ def csv_export(request):
             if endpoint_value.endswith('; '):
                 endpoint_value = endpoint_value[:-2]
             fields.append(endpoint_value)
+
+            vulnerability_ids_value = ''
+            num_vulnerability_ids = 0
+            for vulnerability_id in finding.vulnerability_ids:
+                num_vulnerability_ids += 1
+                if num_vulnerability_ids > 5:
+                    vulnerability_ids_value += '...'
+                    break
+                vulnerability_ids_value += f'{str(vulnerability_id)}; '
+            if finding.cve and vulnerability_ids_value.find(finding.cve) < 0:
+                vulnerability_ids_value += finding.cve
+            if vulnerability_ids_value.endswith('; '):
+                vulnerability_ids_value = vulnerability_ids_value[:-2]
+            fields.append(vulnerability_ids_value)
 
             writer.writerow(fields)
 
@@ -924,6 +941,9 @@ def excel_export(request):
             col_num += 1
             cell = worksheet.cell(row=row_num, column=col_num, value='endpoints')
             cell.font = font_bold
+            col_num += 1
+            cell = worksheet.cell(row=row_num, column=col_num, value='vulnerability_ids')
+            cell.font = font_bold
 
             row_num = 2
         if row_num > 1:
@@ -959,6 +979,21 @@ def excel_export(request):
             if endpoint_value.endswith('; \n'):
                 endpoint_value = endpoint_value[:-3]
             worksheet.cell(row=row_num, column=col_num, value=endpoint_value)
+            col_num += 1
+
+            vulnerability_ids_value = ''
+            num_vulnerability_ids = 0
+            for vulnerability_id in finding.vulnerability_ids:
+                num_vulnerability_ids += 1
+                if num_vulnerability_ids > 5:
+                    vulnerability_ids_value += '...'
+                    break
+                vulnerability_ids_value += f'{str(vulnerability_id)}; \n'
+            if finding.cve and vulnerability_ids_value.find(finding.cve) < 0:
+                vulnerability_ids_value += finding.cve
+            if vulnerability_ids_value.endswith('; \n'):
+                vulnerability_ids_value = vulnerability_ids_value[:-3]
+            worksheet.cell(row=row_num, column=col_num, value=vulnerability_ids_value)
 
         row_num += 1
 
