@@ -40,6 +40,13 @@ def update_timestamps(test, version, branch_tag, build_id, commit_hash, now, sca
     test.engagement.save()
 
 
+def update_tags(test, tags):
+    if tags:
+        test.tags = tags
+
+    test.save()
+
+
 def update_import_history(type, active, verified, tags, minimum_severity, endpoints_to_add, version, branch_tag,
                             build_id, commit_hash, push_to_jira, close_old_findings, test,
                             new_findings=[], closed_findings=[], reactivated_findings=[], untouched_findings=[]):
@@ -53,7 +60,6 @@ def update_import_history(type, active, verified, tags, minimum_severity, endpoi
     import_settings['push_to_jira'] = push_to_jira
     import_settings['tags'] = tags
 
-    # tags=tags TODO no tags field in api for reimport it seems
     if endpoints_to_add:
         import_settings['endpoints'] = [str(endpoint) for endpoint in endpoints_to_add]
 
@@ -108,14 +114,17 @@ def chunk_list(list):
 
 
 def chunk_endpoints_and_disperse(finding, test, endpoints, **kwargs):
-    chunked_list = chunk_list(endpoints)
-    # If there is only one chunk, then do not bother with async
-    if len(chunked_list) < 2:
+    if settings.ASYNC_FINDING_IMPORT:
+        chunked_list = chunk_list(endpoints)
+        # If there is only one chunk, then do not bother with async
+        if len(chunked_list) < 2:
+            add_endpoints_to_unsaved_finding(finding, test, endpoints, sync=True)
+            return []
+        # First kick off all the workers
+        for endpoints_list in chunked_list:
+            add_endpoints_to_unsaved_finding(finding, test, endpoints_list, sync=False)
+    else:
         add_endpoints_to_unsaved_finding(finding, test, endpoints, sync=True)
-        return []
-    # First kick off all the workers
-    for endpoints_list in chunked_list:
-        add_endpoints_to_unsaved_finding(finding, test, endpoints_list, sync=False)
 
 
 # Since adding a model to a ManyToMany relationship does not require an additional
@@ -147,15 +156,9 @@ def add_endpoints_to_unsaved_finding(finding, test, endpoints, **kwargs):
 
         eps, created = Endpoint_Status.objects.get_or_create(
             finding=finding,
-            endpoint=ep)
-        if created:
-            eps.date = finding.date
-            eps.save()
+            endpoint=ep,
+            defaults={'date': finding.date})
 
-        if ep and eps:
-            ep.endpoint_status.add(eps)
-            finding.endpoint_status.add(eps)
-            finding.endpoints.add(ep)
     logger.debug('IMPORT_SCAN: ' + str(len(endpoints)) + ' imported')
 
 

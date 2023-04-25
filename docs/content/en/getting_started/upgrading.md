@@ -5,20 +5,6 @@ draft: false
 weight: 5
 ---
 
-{{% alert title="Deprecation notice" color="warning" %}}
-Legacy authorization for changing configurations based on staff users will be
-removed with version 2.12.0 / 5. July 2022. If you have set
-`FEATURE_CONFIGURATION_AUTHORIZATION` to `False` in your local configuration,
-remove this local setting and start using the new authorization as described
-in [Configuration permissions]({{< ref "/usage/permissions#configuration-permissions" >}}).
-
-To support the transition, you can run a migration script with ``./manage.py migrate_staff_users``. This script:
-
-* creates a group for all staff users,
-* sets all configuration permissions that staff users had and
-* sets the global Owner role, if `AUTHORIZATION_STAFF_OVERRIDE` is set to `True`.
-{{% /alert %}}
-
 Docker-compose
 --------------
 
@@ -34,7 +20,7 @@ DockerHub to update.
 {{% /alert %}}
 
 
-The generic upgrade method for docker-compose follows these steps:
+The generic upgrade method for docker-compose are as follows:
 
 -   Pull the latest version
 
@@ -43,12 +29,18 @@ The generic upgrade method for docker-compose follows these steps:
     docker pull defectdojo/defectdojo-nginx:latest
     ```
 
--   If you would like to use something older (so not the latest
-    version), specify the version (tag) you want to upgrade to:
+-   If you would like to use a version other than the latest, specify the version (tag) you want to upgrade to:
 
     ``` {.sourceCode .bash}
     docker pull defectdojo/defectdojo-django:1.10.2
     docker pull defectdojo/defectdojo-nginx:1.10.2
+    ```
+
+-   If you would like to use alpine based images, you specify the version (tag) you want to upgrade to:
+
+    ``` {.sourceCode .bash}
+    docker pull defectdojo/defectdojo-django:1.10.2-alpine
+    docker pull defectdojo/defectdojo-nginx:1.10.2-alpine
     ```
 
 -   Go to the directory where your docker-compose.yml file lives
@@ -64,22 +56,74 @@ The generic upgrade method for docker-compose follows these steps:
 ### Building your local images
 
 If you build your images locally and do not use the ones from DockerHub,
-the instructions are much the same, except that you'd build your images
+the instructions are the same, with the caveat that you must build your images
 first. (Of course, if you're doing this, then you know you have to
 update the source code first)
 
-Replace the first step above with this one: `docker-compose build`
+Replace the first step above with: `docker-compose build`
 
 godojo installations
 --------------------
 
 If you have installed DefectDojo on "iron" and wish to upgrade the installation, please see the [instructions in the repo](https://github.com/DefectDojo/godojo/blob/master/docs-and-scripts/upgrading.md).
 
-## Upgrading to DefectDojo Version 2.12.x.
+## Upgrading to DefectDojo Version 2.21.x.
 
-**Breaking change for search:** The field `cve` has been removed from the search index for Findings and the Vulnerability Ids have been added to the search index. With this the syntax to search explicitly for vulnerability ids have been changed from `cve:` to `vulnerability_id:`, e.g. `vulnerability_id:CVE-2020-27619`.
+There are no special instruction for upgrading to 2.21.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.21.0) for the contents of the release.
 
-This requires a one-time rebuild of the Django-Watson search index. Execute the django command from the defect dojo installation directory or from a shell of the Docker container or Kubernetes pod:
+## Upgrading to DefectDojo Version 2.20.x.
+
+There are no special instruction for upgrading to 2.20.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.20.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.19.x
+
+There are new docker images based on alpine with fewer third party dependencies. Related to the new images the current docker files had to be renamed and have a "-debian" or the new images a "-alpine" at the end. Furthermore there are new docker tags [DefectdojoVersion]-[OS]. For example 2.19.0-alpine or 2.19.0-debian. The currend tags (latest and [DefectdojoVersion]) are still based on the "old" images. Be aware that the new alpine images are not heavily tested and may contain bugs.
+
+*Breaking Change*
+
+In version 2.19.3, the GitHub OAuth integration has been removed to prevent configurations that may allow more access than intended.
+
+[DefectDojo Security Advisory: Severity Medium | Potential GitHub Authentication Misconfiguration](https://github.com/DefectDojo/django-DefectDojo/security/advisories/GHSA-hfp4-q5pg-2p7r)
+
+## Upgrading to DefectDojo Version 2.18.x
+
+**Upgrade instructions for helm chart with rabbitMQ enabled**: The rabbitMQ uses a statefulset by default. Before upgrading the helm chart we have to ensure that all queues are empty:
+
+```bash
+kubectl exec -i <name_of_the_rabbitmq_pod>  -- rabbitmqctl list_queues
+```
+
+Next step is to delete rabbitMQ pvc:
+
+```bash
+kubectl delete  pvc -l app.kubernetes.io/name=rabbitmq
+```
+
+Last step is to perform the upgrade.
+
+For more information: https://artifacthub.io/packages/helm/bitnami/rabbitmq/11.2.0
+
+
+
+## Upgrading to DefectDojo Version 2.17.x.
+
+There are no special instruction for upgrading to 2.17.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.17.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.16.x.
+
+There are no special instruction for upgrading to 2.16.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.16.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.15.x.
+
+There are no special instruction for upgrading to 2.15.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.15.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.13.x.
+
+The last release implemented the search for vulnerability ids, but the search database was not initialized. To populate the database table of the vulnerability ids, execute this django command from the defect dojo installation directory or from a shell of the Docker container or Kubernetes pod:
+
+`./manage.py migrate_cve`
+
+Additionally this requires a one-time rebuild of the Django-Watson search index. Execute this django command from the defect dojo installation directory or from a shell of the Docker container or Kubernetes pod:
 
 `./manage.py buildwatson`
 
@@ -102,6 +146,15 @@ helm upgrade \
   --set primary.persistence.existingClaim=$POSTGRESQL_PVC \
   ... # add your custom settings
 ```
+
+**Further changes:**
+
+Legacy authorization for changing configurations based on staff users has been removed.
+
+## Upgrading to DefectDojo Version 2.12.x.
+
+**Breaking change for search:** The field `cve` has been removed from the search index for Findings and the Vulnerability Ids have been added to the search index. With this the syntax to search explicitly for vulnerability ids have been changed from `cve:` to `vulnerability_id:`, e.g. `vulnerability_id:CVE-2020-27619`.
+
 
 ## Upgrading to DefectDojo Version 2.10.x.
 
@@ -152,7 +205,7 @@ Please consult the security advisories [GHSA-f82x-m585-gj24](https://github.com/
 ## Upgrading to DefectDojo Version 2.5.x.
 
 Legacy authorization has been completely removed with version 2.5.0. This includes removal of the migration of users
-to the new authorization as described in https://defectdojo.github.io/django-DefectDojo/getting_started/upgrading/#authorization.
+to the new authorization as described in https://documentation.defectdojo.com/getting_started/upgrading/#authorization.
 If you are still using the legacy authorization, you should run the migration with ``./manage.py migrate_authorization_v2``
 before upgrading to version 2.5.0
 
@@ -204,7 +257,7 @@ of the same endpoints. The mentioned bug was fixed in 2.2.0 and if you have seen
 Follow the usual steps to upgrade as described above.
 
 BEFORE UPGRADING
-- If you are using SAML2 checkout the new [documentaion](https://defectdojo.github.io/django-DefectDojo/integrations/social-authentication/#saml-20) and update you settings following the migration section. We replaced [django-saml2-auth](https://github.com/fangli/django-saml2-auth) with [djangosaml2](https://github.com/IdentityPython/djangosaml2).
+- If you are using SAML2 checkout the new [documentaion](https://documentation.defectdojo.com/integrations/social-authentication/#saml-20) and update you settings following the migration section. We replaced [django-saml2-auth](https://github.com/fangli/django-saml2-auth) with [djangosaml2](https://github.com/IdentityPython/djangosaml2).
 
 AFTER UPGRADING
 - Usual migration process (`python manage.py migrate`) try to migrate all endpoints to new format and merge duplicates.

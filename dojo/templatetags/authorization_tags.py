@@ -19,8 +19,12 @@ def has_global_permission(permission):
 
 
 @register.filter
-def has_configuration_permission(permission, legacy):
-    return configuration_permission(crum.get_current_user(), permission, legacy)
+def has_configuration_permission(permission, request):
+    if request is None:
+        user = crum.get_current_user()
+    else:
+        user = crum.get_current_user() or request.user
+    return configuration_permission(user, permission)
 
 
 @cache_for_request

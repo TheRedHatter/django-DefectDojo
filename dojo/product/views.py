@@ -22,7 +22,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import gettext as _
 
-from dojo.templatetags.display_tags import get_level
+from dojo.templatetags.display_tags import asvs_calc_level
 from dojo.filters import ProductEngagementFilter, ProductFilter, EngagementFilter, MetricsEndpointFilter, \
     MetricsFindingFilter, ProductComponentFilter
 from dojo.forms import ProductForm, EngForm, DeleteProductForm, DojoMetaDataForm, JIRAProjectForm, JIRAFindingForm, \
@@ -30,16 +30,16 @@ from dojo.forms import ProductForm, EngForm, DeleteProductForm, DojoMetaDataForm
     EngagementPresetsForm, DeleteEngagementPresetsForm, ProductNotificationsForm, \
     GITHUB_Product_Form, GITHUBFindingForm, AppAnalysisForm, JIRAEngagementForm, Add_Product_MemberForm, \
     Edit_Product_MemberForm, Delete_Product_MemberForm, Add_Product_GroupForm, Edit_Product_Group_Form, \
-    Delete_Product_GroupForm, \
+    Delete_Product_GroupForm, SLA_Configuration, \
     DeleteAppAnalysisForm, Product_API_Scan_ConfigurationForm, DeleteProduct_API_Scan_ConfigurationForm
 from dojo.models import Product_Type, Note_Type, Finding, Product, Engagement, Test, GITHUB_PKey, \
-    Test_Type, System_Settings, Languages, App_Analysis, Benchmark_Type, Benchmark_Product_Summary, Endpoint_Status, \
+    Test_Type, System_Settings, Languages, App_Analysis, Benchmark_Product_Summary, Endpoint_Status, \
     Endpoint, Engagement_Presets, DojoMeta, Notifications, BurpRawRequestResponse, Product_Member, \
     Product_Group, Product_API_Scan_Configuration
 from dojo.utils import add_external_issue, add_error_message_to_response, add_field_errors_to_response, get_page_items, \
     add_breadcrumb, async_delete, \
     get_system_setting, get_setting, Product_Tab, get_punchcard_data, queryset_check, is_title_in_breadcrumbs, \
-    get_enabled_notifications_list
+    get_enabled_notifications_list, get_zero_severity_level, sum_by_severity_level
 
 from dojo.notifications.helper import create_notification
 from dojo.components.sql_group_concat import Sql_GroupConcat
@@ -51,6 +51,7 @@ from dojo.product.queries import get_authorized_products, get_authorized_members
 from dojo.product_type.queries import get_authorized_members_for_product_type, get_authorized_groups_for_product_type, \
     get_authorized_product_types
 from dojo.tool_config.factory import create_API
+from dojo.tools.factory import get_api_scan_configuration_hints
 
 import dojo.finding.helper as finding_helper
 import dojo.jira_link.helper as jira_helper
@@ -142,9 +143,9 @@ def iso_to_gregorian(iso_year, iso_week, iso_day):
 
 @user_is_authorized(Product, Permissions.Product_View, 'pid')
 def view_product(request, pid):
-    prod_query = Product.objects.all().select_related('product_manager', 'technical_contact', 'team_manager') \
-        .prefetch_related('members') \
-        .prefetch_related('prod_type__members')
+    prod_query = Product.objects.all().select_related('product_manager', 'technical_contact', 'team_manager', 'sla_configuration') \
+                                      .prefetch_related('members') \
+                                      .prefetch_related('prod_type__members')
     prod = get_object_or_404(prod_query, id=pid)
     product_members = get_authorized_members_for_product(prod, Permissions.Product_View)
     product_type_members = get_authorized_members_for_product_type(prod.prod_type, Permissions.Product_Type_View)
@@ -153,15 +154,29 @@ def view_product(request, pid):
     personal_notifications_form = ProductNotificationsForm(
         instance=Notifications.objects.filter(user=request.user).filter(product=prod).first())
     langSummary = Languages.objects.filter(product=prod).aggregate(Sum('files'), Sum('code'), Count('files'))
-    languages = Languages.objects.filter(product=prod).order_by('-code')
+    languages = Languages.objects.filter(product=prod).order_by('-code').select_related('language')
     app_analysis = App_Analysis.objects.filter(product=prod).order_by('name')
-    benchmark_type = Benchmark_Type.objects.filter(enabled=True).order_by('name')
     benchmarks = Benchmark_Product_Summary.objects.filter(product=prod, publish=True,
                                                           benchmark_type__enabled=True).order_by('benchmark_type__name')
+    sla = SLA_Configuration.objects.filter(id=prod.sla_configuration_id).first()
     benchAndPercent = []
     for i in range(0, len(benchmarks)):
-        benchAndPercent.append([benchmarks[i].benchmark_type, get_level(benchmarks[i])])
+        desired_level, total, total_pass, total_wait, total_fail, total_viewed = asvs_calc_level(benchmarks[i])
 
+        success_percent = round((float(total_pass) / float(total)) * 100, 2)
+        waiting_percent = round((float(total_wait) / float(total)) * 100, 2)
+        fail_percent = round(100 - success_percent - waiting_percent, 2)
+        print(fail_percent)
+        benchAndPercent.append({
+            'id': benchmarks[i].benchmark_type.id,
+            'name': benchmarks[i].benchmark_type,
+            'level': desired_level,
+            'success': {'count': total_pass, 'percent': success_percent},
+            'waiting': {'count': total_wait, 'percent': waiting_percent},
+            'fail': {'count': total_fail, 'percent': fail_percent},
+            'pass': total_pass + total_fail,
+            'total': total
+        })
     system_settings = System_Settings.objects.get()
 
     product_metadata = dict(prod.product_meta.order_by('name').values_list('name', 'value'))
@@ -216,7 +231,8 @@ def view_product(request, pid):
         'product_groups': product_groups,
         'product_type_groups': product_type_groups,
         'personal_notifications_form': personal_notifications_form,
-        'enabled_notifications': get_enabled_notifications_list()})
+        'enabled_notifications': get_enabled_notifications_list(),
+        'sla': sla})
 
 
 @user_is_authorized(Product, Permissions.Component_View, 'pid')
@@ -442,7 +458,8 @@ def endpoint_querys(request, prod):
                                                   mitigated=True,
                                                   out_of_scope=False).order_by("date")
     filters['open'] = endpoints_qs.filter(date__range=[start_date, end_date],
-                                          mitigated=False)
+                                          mitigated=False,
+                                          finding__active=True)
     filters['inactive'] = endpoints_qs.filter(date__range=[start_date, end_date],
                                               mitigated=True)
     filters['closed'] = endpoints_qs.filter(date__range=[start_date, end_date],
@@ -523,6 +540,9 @@ def view_product_metrics(request, pid):
     high_weekly = OrderedDict()
     medium_weekly = OrderedDict()
 
+    open_objs_by_severity = get_zero_severity_level()
+    accepted_objs_by_severity = get_zero_severity_level()
+
     for v in filters.get('open', None):
         iso_cal = v.date.isocalendar()
         x = iso_to_gregorian(iso_cal[0], iso_cal[1], 1)
@@ -558,8 +578,7 @@ def view_product_metrics(request, pid):
             else:
                 severity_weekly[x][severity] = 1
         else:
-            severity_weekly[x] = {'Critical': 0, 'High': 0,
-                                  'Medium': 0, 'Low': 0, 'Info': 0}
+            severity_weekly[x] = get_zero_severity_level()
             severity_weekly[x][severity] = 1
             severity_weekly[x]['week'] = y
 
@@ -579,6 +598,10 @@ def view_product_metrics(request, pid):
             else:
                 medium_weekly[x] = {'count': 1, 'week': y}
 
+        # Optimization: count severity level on server side
+        if open_objs_by_severity.get(v.severity) is not None:
+            open_objs_by_severity[v.severity] += 1
+
     for a in filters.get('accepted', None):
         if view == 'Finding':
             finding = a
@@ -595,13 +618,19 @@ def view_product_metrics(request, pid):
             open_close_weekly[x] = {'closed': 0, 'open': 0, 'accepted': 1}
             open_close_weekly[x]['week'] = y
 
+        if accepted_objs_by_severity.get(a.severity) is not None:
+            accepted_objs_by_severity[a.severity] += 1
+
     test_data = {}
     for t in tests:
         if t.test_type.name in test_data:
             test_data[t.test_type.name] += t.verified_finding_count
         else:
             test_data[t.test_type.name] = t.verified_finding_count
+
     product_tab = Product_Tab(prod, title=_("Product"), tab="metrics")
+
+    open_objs_by_age = {x: len([_ for _ in filters.get('open') if _.age == x]) for x in set([_.age for _ in filters.get('open')])}
 
     return render(request, 'dojo/product_metrics.html', {
         'prod': prod,
@@ -610,14 +639,24 @@ def view_product_metrics(request, pid):
         'inactive_engs': inactive_engs_page,
         'view': view,
         'verified_objs': filters.get('verified', None),
+        'verified_objs_by_severity': sum_by_severity_level(filters.get('verified')),
         'open_objs': filters.get('open', None),
+        'open_objs_by_severity': open_objs_by_severity,
+        'open_objs_by_age': open_objs_by_age,
         'inactive_objs': filters.get('inactive', None),
+        'inactive_objs_by_severity': sum_by_severity_level(filters.get('inactive')),
         'closed_objs': filters.get('closed', None),
+        'closed_objs_by_severity': sum_by_severity_level(filters.get('closed')),
         'false_positive_objs': filters.get('false_positive', None),
+        'false_positive_objs_by_severity': sum_by_severity_level(filters.get('false_positive')),
         'out_of_scope_objs': filters.get('out_of_scope', None),
+        'out_of_scope_objs_by_severity': sum_by_severity_level(filters.get('out_of_scope')),
         'accepted_objs': filters.get('accepted', None),
+        'accepted_objs_by_severity': accepted_objs_by_severity,
         'new_objs': filters.get('new_verified', None),
+        'new_objs_by_severity': sum_by_severity_level(filters.get('new_verified')),
         'all_objs': filters.get('all', None),
+        'all_objs_by_severity': sum_by_severity_level(filters.get('all')),
         'form': filters.get('form', None),
         'reset_link': reverse('view_product_metrics', args=(prod.id,)) + '?type=' + view,
         'open_vulnerabilities': open_vulnerabilities,
@@ -870,7 +909,7 @@ def edit_product(request, pid):
         else:
             jform = None
 
-        if github_enabled and (github_inst is not None):
+        if github_enabled:
             if github_inst is not None:
                 gform = GITHUB_Product_Form(instance=github_inst)
             else:
@@ -989,11 +1028,6 @@ def new_eng_for_app(request, pid, cicd=False):
 
             success, jira_epic_form = jira_helper.process_jira_epic_form(request, engagement=engagement)
             error = error or not success
-
-            create_notification(event='engagement_added',
-                                title=_("%(engagement)s for %(product)s") % {'engagement': engagement.name, 'product': product.name},
-                                engagement=engagement, url=reverse('view_engagement', args=(engagement.id,)),
-                                objowner=engagement.lead)
 
             messages.add_message(request,
                                  messages.SUCCESS,
@@ -1201,10 +1235,10 @@ def ad_hoc_finding(request, pid):
         if (form['active'].value() is False or form['false_p'].value()) and form['duplicate'].value() is False:
             closing_disabled = Note_Type.objects.filter(is_mandatory=True, is_active=True).count()
             if closing_disabled != 0:
-                error_inactive = ValidationError('Can not set a finding as inactive without adding all mandatory notes',
+                error_inactive = ValidationError(_('Can not set a finding as inactive without adding all mandatory notes'),
                                                  code='inactive_without_mandatory_notes')
                 error_false_p = ValidationError(
-                    'Can not set a finding as false positive without adding all mandatory notes',
+                    _('Can not set a finding as false positive without adding all mandatory notes'),
                     code='false_p_without_mandatory_notes')
                 if form['active'].value() is False:
                     form.add_error('active', error_inactive)
@@ -1212,7 +1246,7 @@ def ad_hoc_finding(request, pid):
                     form.add_error('false_p', error_false_p)
                 messages.add_message(request,
                                      messages.ERROR,
-                                     'Can not set a finding as inactive or false positive without adding all mandatory notes',
+                                     _('Can not set a finding as inactive or false positive without adding all mandatory notes'),
                                      extra_tags='alert-danger')
         if use_jira:
             jform = JIRAFindingForm(request.POST, prefix='jiraform', push_all=push_all_jira_issues,
@@ -1285,7 +1319,7 @@ def ad_hoc_finding(request, pid):
 
             messages.add_message(request,
                                  messages.SUCCESS,
-                                 'Finding added successfully.',
+                                 _('Finding added successfully.'),
                                  extra_tags='alert-success')
 
             if '_Finished' in request.POST:
@@ -1294,7 +1328,7 @@ def ad_hoc_finding(request, pid):
                 return HttpResponseRedirect(reverse('add_findings', args=(test.id,)))
         else:
             form_error = True
-            add_error_message_to_response('The form has errors, please correct them below.')
+            add_error_message_to_response(_('The form has errors, please correct them below.'))
             add_field_errors_to_response(jform)
             add_field_errors_to_response(form)
 
@@ -1309,7 +1343,7 @@ def ad_hoc_finding(request, pid):
         else:
             gform = None
 
-    product_tab = Product_Tab(prod, title="Add Finding", tab="engagements")
+    product_tab = Product_Tab(prod, title=_("Add Finding"), tab="engagements")
     product_tab.setEngagement(eng)
     return render(request, 'dojo/ad_hoc_findings.html',
                   {'form': form,
@@ -1328,7 +1362,7 @@ def engagement_presets(request, pid):
     prod = get_object_or_404(Product, id=pid)
     presets = Engagement_Presets.objects.filter(product=prod).all()
 
-    product_tab = Product_Tab(prod, title="Engagement Presets", tab="settings")
+    product_tab = Product_Tab(prod, title=_("Engagement Presets"), tab="settings")
 
     return render(request, 'dojo/view_presets.html',
                   {'product_tab': product_tab,
@@ -1341,7 +1375,7 @@ def edit_engagement_presets(request, pid, eid):
     prod = get_object_or_404(Product, id=pid)
     preset = get_object_or_404(Engagement_Presets, id=eid)
 
-    product_tab = Product_Tab(prod, title="Edit Engagement Preset", tab="settings")
+    product_tab = Product_Tab(prod, title=_("Edit Engagement Preset"), tab="settings")
 
     if request.method == 'POST':
         tform = EngagementPresetsForm(request.POST, instance=preset)
@@ -1350,7 +1384,7 @@ def edit_engagement_presets(request, pid, eid):
             messages.add_message(
                 request,
                 messages.SUCCESS,
-                'Engagement Preset Successfully Updated.',
+                _('Engagement Preset Successfully Updated.'),
                 extra_tags='alert-success')
             return HttpResponseRedirect(reverse('engagement_presets', args=(pid,)))
     else:
@@ -1375,13 +1409,13 @@ def add_engagement_presets(request, pid):
             messages.add_message(
                 request,
                 messages.SUCCESS,
-                'Engagement Preset Successfully Created.',
+                _('Engagement Preset Successfully Created.'),
                 extra_tags='alert-success')
             return HttpResponseRedirect(reverse('engagement_presets', args=(pid,)))
     else:
         tform = EngagementPresetsForm()
 
-    product_tab = Product_Tab(prod, title="New Engagement Preset", tab="settings")
+    product_tab = Product_Tab(prod, title=_("New Engagement Preset"), tab="settings")
     return render(request, 'dojo/new_params.html', {'tform': tform, 'pid': pid, 'product_tab': product_tab})
 
 
@@ -1398,7 +1432,7 @@ def delete_engagement_presets(request, pid, eid):
                 preset.delete()
                 messages.add_message(request,
                                      messages.SUCCESS,
-                                     'Engagement presets and engagement relationships removed.',
+                                     _('Engagement presets and engagement relationships removed.'),
                                      extra_tags='alert-success')
                 return HttpResponseRedirect(reverse('engagement_presets', args=(pid,)))
 
@@ -1406,7 +1440,7 @@ def delete_engagement_presets(request, pid, eid):
     collector.collect([preset])
     rels = collector.nested()
 
-    product_tab = Product_Tab(prod, title="Delete Engagement Preset", tab="settings")
+    product_tab = Product_Tab(prod, title=_("Delete Engagement Preset"), tab="settings")
     return render(request, 'dojo/delete_presets.html',
                   {'product': product,
                    'form': form,
@@ -1433,7 +1467,7 @@ def edit_notifications(request, pid):
             form.save()
             messages.add_message(request,
                                  messages.SUCCESS,
-                                 'Notification settings updated.',
+                                 _('Notification settings updated.'),
                                  extra_tags='alert-success')
 
     return HttpResponseRedirect(reverse('view_product', args=(pid,)))
@@ -1450,7 +1484,7 @@ def add_product_member(request, pid):
                                                                                     Permissions.Product_Member_Add_Owner):
                 messages.add_message(request,
                                      messages.WARNING,
-                                     'You are not permitted to add users as owners.',
+                                     _('You are not permitted to add users as owners.'),
                                      extra_tags='alert-warning')
             else:
                 if 'users' in memberform.cleaned_data and len(memberform.cleaned_data['users']) > 0:
@@ -1464,10 +1498,10 @@ def add_product_member(request, pid):
                             product_member.save()
                 messages.add_message(request,
                                      messages.SUCCESS,
-                                     'Product members added successfully.',
+                                     _('Product members added successfully.'),
                                      extra_tags='alert-success')
                 return HttpResponseRedirect(reverse('view_product', args=(pid,)))
-    product_tab = Product_Tab(product, title="Add Product Member", tab="settings")
+    product_tab = Product_Tab(product, title=_("Add Product Member"), tab="settings")
     return render(request, 'dojo/new_product_member.html', {
         'product': product,
         'form': memberform,
@@ -1486,19 +1520,19 @@ def edit_product_member(request, memberid):
                                                                 Permissions.Product_Member_Add_Owner):
                 messages.add_message(request,
                                      messages.WARNING,
-                                     'You are not permitted to make users to owners.',
+                                     _('You are not permitted to make users to owners.'),
                                      extra_tags='alert-warning')
             else:
                 memberform.save()
                 messages.add_message(request,
                                      messages.SUCCESS,
-                                     'Product member updated successfully.',
+                                     _('Product member updated successfully.'),
                                      extra_tags='alert-success')
                 if is_title_in_breadcrumbs('View User'):
                     return HttpResponseRedirect(reverse('view_user', args=(member.user.id,)))
                 else:
                     return HttpResponseRedirect(reverse('view_product', args=(member.product.id,)))
-    product_tab = Product_Tab(member.product, title="Edit Product Member", tab="settings")
+    product_tab = Product_Tab(member.product, title=_("Edit Product Member"), tab="settings")
     return render(request, 'dojo/edit_product_member.html', {
         'memberid': memberid,
         'form': memberform,
@@ -1517,7 +1551,7 @@ def delete_product_member(request, memberid):
         member.delete()
         messages.add_message(request,
                              messages.SUCCESS,
-                             'Product member deleted successfully.',
+                             _('Product member deleted successfully.'),
                              extra_tags='alert-success')
         if is_title_in_breadcrumbs('View User'):
             return HttpResponseRedirect(reverse('view_user', args=(member.user.id,)))
@@ -1526,7 +1560,7 @@ def delete_product_member(request, memberid):
                 return HttpResponseRedirect(reverse('product'))
             else:
                 return HttpResponseRedirect(reverse('view_product', args=(member.product.id,)))
-    product_tab = Product_Tab(member.product, title="Delete Product Member", tab="settings")
+    product_tab = Product_Tab(member.product, title=_("Delete Product Member"), tab="settings")
     return render(request, 'dojo/delete_product_member.html', {
         'memberid': memberid,
         'form': memberform,
@@ -1548,12 +1582,12 @@ def add_api_scan_configuration(request, pid):
                     result = api.test_product_connection(product_api_scan_configuration)
                     messages.add_message(request,
                                          messages.SUCCESS,
-                                         f'API connection successful with message: {result}.',
+                                         _('API connection successful with message: %(result)s.') % {'result': result},
                                          extra_tags='alert-success')
                 product_api_scan_configuration.save()
                 messages.add_message(request,
                                      messages.SUCCESS,
-                                     'API Scan Configuration added successfully.',
+                                     _('API Scan Configuration added successfully.'),
                                      extra_tags='alert-success')
                 if 'add_another' in request.POST:
                     return HttpResponseRedirect(reverse('add_api_scan_configuration', args=(pid,)))
@@ -1568,13 +1602,14 @@ def add_api_scan_configuration(request, pid):
     else:
         form = Product_API_Scan_ConfigurationForm()
 
-    product_tab = Product_Tab(product, title="Add API Scan Configuration", tab="settings")
+    product_tab = Product_Tab(product, title=_("Add API Scan Configuration"), tab="settings")
 
     return render(request,
                   'dojo/add_product_api_scan_configuration.html',
                   {'form': form,
                    'product_tab': product_tab,
                    'product': product,
+                   'api_scan_configuration_hints': get_api_scan_configuration_hints(),
                    })
 
 
@@ -1582,7 +1617,7 @@ def add_api_scan_configuration(request, pid):
 def view_api_scan_configurations(request, pid):
     product_api_scan_configurations = Product_API_Scan_Configuration.objects.filter(product=pid)
 
-    product_tab = Product_Tab(get_object_or_404(Product, id=pid), title="API Scan Configurations", tab="settings")
+    product_tab = Product_Tab(get_object_or_404(Product, id=pid), title=_("API Scan Configurations"), tab="settings")
     return render(request,
                   'dojo/view_product_api_scan_configurations.html',
                   {
@@ -1610,13 +1645,13 @@ def edit_api_scan_configuration(request, pid, pascid):
                     result = api.test_product_connection(form_copy)
                     messages.add_message(request,
                                          messages.SUCCESS,
-                                         f'API connection successful with message: {result}.',
+                                         _('API connection successful with message: %(result)s.') % {'result': result},
                                          extra_tags='alert-success')
                 form.save()
 
                 messages.add_message(request,
                                      messages.SUCCESS,
-                                     'API Scan Configuration successfully updated.',
+                                     _('API Scan Configuration successfully updated.'),
                                      extra_tags='alert-success')
                 return HttpResponseRedirect(reverse('view_api_scan_configurations', args=(pid,)))
             except Exception as e:
@@ -1628,12 +1663,13 @@ def edit_api_scan_configuration(request, pid, pascid):
     else:
         form = Product_API_Scan_ConfigurationForm(instance=product_api_scan_configuration)
 
-    product_tab = Product_Tab(get_object_or_404(Product, id=pid), title="Edit API Scan Configuration", tab="settings")
+    product_tab = Product_Tab(get_object_or_404(Product, id=pid), title=_("Edit API Scan Configuration"), tab="settings")
     return render(request,
                   'dojo/edit_product_api_scan_configuration.html',
                   {
                       'form': form,
-                      'product_tab': product_tab
+                      'product_tab': product_tab,
+                      'api_scan_configuration_hints': get_api_scan_configuration_hints(),
                   })
 
 
@@ -1650,13 +1686,13 @@ def delete_api_scan_configuration(request, pid, pascid):
         product_api_scan_configuration.delete()
         messages.add_message(request,
                              messages.SUCCESS,
-                             'API Scan Configuration deleted.',
+                             _('API Scan Configuration deleted.'),
                              extra_tags='alert-success')
         return HttpResponseRedirect(reverse('view_api_scan_configurations', args=(pid,)))
     else:
         form = DeleteProduct_API_Scan_ConfigurationForm(instance=product_api_scan_configuration)
 
-    product_tab = Product_Tab(get_object_or_404(Product, id=pid), title="Delete Tool Configuration", tab="settings")
+    product_tab = Product_Tab(get_object_or_404(Product, id=pid), title=_("Delete Tool Configuration"), tab="settings")
     return render(request,
                   'dojo/delete_product_api_scan_configuration.html',
                   {
@@ -1678,20 +1714,20 @@ def edit_product_group(request, groupid):
                                                                Permissions.Product_Group_Add_Owner):
                 messages.add_message(request,
                                      messages.WARNING,
-                                     'You are not permitted to make groups owners.',
+                                     _('You are not permitted to make groups owners.'),
                                      extra_tags='alert-warning')
             else:
                 groupform.save()
                 messages.add_message(request,
                                      messages.SUCCESS,
-                                     'Product group updated successfully.',
+                                     _('Product group updated successfully.'),
                                      extra_tags='alert-success')
                 if is_title_in_breadcrumbs('View Group'):
                     return HttpResponseRedirect(reverse('view_group', args=(group.group.id,)))
                 else:
                     return HttpResponseRedirect(reverse('view_product', args=(group.product.id,)))
 
-    product_tab = Product_Tab(group.product, title="Edit Product Group", tab="settings")
+    product_tab = Product_Tab(group.product, title=_("Edit Product Group"), tab="settings")
     return render(request, 'dojo/edit_product_group.html', {
         'groupid': groupid,
         'form': groupform,
@@ -1710,7 +1746,7 @@ def delete_product_group(request, groupid):
         group.delete()
         messages.add_message(request,
                              messages.SUCCESS,
-                             'Product group deleted successfully.',
+                             _('Product group deleted successfully.'),
                              extra_tags='alert-success')
         if is_title_in_breadcrumbs('View Group'):
             return HttpResponseRedirect(reverse('view_group', args=(group.group.id,)))
@@ -1719,7 +1755,7 @@ def delete_product_group(request, groupid):
             #  page
             return HttpResponseRedirect(reverse('view_product', args=(group.product.id,)))
 
-    product_tab = Product_Tab(group.product, title="Delete Product Group", tab="settings")
+    product_tab = Product_Tab(group.product, title=_("Delete Product Group"), tab="settings")
     return render(request, 'dojo/delete_product_group.html', {
         'groupid': groupid,
         'form': groupform,
@@ -1739,7 +1775,7 @@ def add_product_group(request, pid):
                                                                                     Permissions.Product_Group_Add_Owner):
                 messages.add_message(request,
                                      messages.WARNING,
-                                     'You are not permitted to add groups as owners.',
+                                     _('You are not permitted to add groups as owners.'),
                                      extra_tags='alert-warning')
             else:
                 if 'groups' in group_form.cleaned_data and len(group_form.cleaned_data['groups']) > 0:
@@ -1753,10 +1789,10 @@ def add_product_group(request, pid):
                             product_group.save()
                 messages.add_message(request,
                                      messages.SUCCESS,
-                                     'Product groups added successfully.',
+                                     _('Product groups added successfully.'),
                                      extra_tags='alert-success')
                 return HttpResponseRedirect(reverse('view_product', args=(pid,)))
-    product_tab = Product_Tab(product, title="Edit Product Group", tab="settings")
+    product_tab = Product_Tab(product, title=_("Edit Product Group"), tab="settings")
     return render(request, 'dojo/new_product_group.html', {
         'product': product,
         'form': group_form,

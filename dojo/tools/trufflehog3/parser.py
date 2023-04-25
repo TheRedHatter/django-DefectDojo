@@ -13,7 +13,7 @@ class TruffleHog3Parser(object):
         return "Trufflehog3 Scan"
 
     def get_description_for_scan_types(self, scan_type):
-        return "JSON Output of Trufflehog."
+        return "JSON Output of Trufflehog3, a fork of TruffleHog located at https://github.com/feeltheajf/truffleHog3"
 
     def get_findings(self, filename, test):
         data = json.load(filename)
@@ -26,7 +26,7 @@ class TruffleHog3Parser(object):
             elif json_data.get('rule'):
                 self.get_finding_current(json_data, test, dupes)
             else:
-                raise Exception('Format is not recognized for Trufflehog3')
+                raise ValueError('Format is not recognized for Trufflehog3')
 
         return list(dupes.values())
 

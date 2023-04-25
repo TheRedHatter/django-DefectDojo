@@ -1,9 +1,11 @@
 
+import datetime
 import json
 import logging
 
 from dateutil import parser
 from defusedxml import ElementTree
+
 from dojo.models import Finding
 from dojo.utils import add_language
 
@@ -122,7 +124,7 @@ class CheckmarxParser(object):
         active = self.isActive(state)
         verified = self.isVerified(state)
 
-        if not(aggregateKeys in dupes):
+        if not (aggregateKeys in dupes):
             find = Finding(title=title,
                            cwe=int(cwe),
                            test=test,
@@ -151,13 +153,13 @@ class CheckmarxParser(object):
             if queryId not in vuln_ids_from_tool[aggregateKeys]:
                 vuln_ids_from_tool[aggregateKeys].append(queryId)
             # If at least one of the findings in the aggregate is exploitable, the defectdojo finding should not be "false positive"
-            if(false_p == "False"):
+            if (false_p == "False"):
                 dupes[aggregateKeys].false_p = False
             # If at least one of the findings in the aggregate is active, the defectdojo finding should be active
-            if(active):
+            if (active):
                 dupes[aggregateKeys].active = True
             # If at least one of the findings in the aggregate is verified, the defectdojo finding should be verified
-            if(verified):
+            if (verified):
                 dupes[aggregateKeys].verified = True
 
     # Iterate over function calls / assignments to extract finding description and last pathnode
@@ -168,7 +170,7 @@ class CheckmarxParser(object):
         for path in result.findall('Path'):
             firstPathnode = True
             for pathnode in path.findall('PathNode'):
-                if(firstPathnode):
+                if (firstPathnode):
                     sourceFilename, sourceLineNumber, sourceObject = self.get_pathnode_elements(pathnode)
                     firstPathnode = False
         # At this point we have iterated over all path nodes (function calls) and pathnode is at the sink of the vulnerability
@@ -187,7 +189,7 @@ class CheckmarxParser(object):
         state = result.get('state')
         # Loop over <Path> (there should be only one)
         paths = result.findall('Path')
-        if(len(paths)) > 1:
+        if (len(paths)) > 1:
             logger.warning("Checkmarx scan: more than one path found: " + str(len(paths)) + ". Only the last one will be used")
 
         for path in paths:
@@ -205,7 +207,7 @@ class CheckmarxParser(object):
             for pathnode in path.findall('PathNode'):
                 findingdetail = self.get_description_detailed(pathnode, findingdetail)
                 nodeId = pathnode.find('NodeId').text
-                if(nodeId == "1"):
+                if (nodeId == "1"):
                     sourceFilename, sourceLineNumber, sourceObject = self.get_pathnode_elements(pathnode)
             # the last pathnode is the sink
             sinkFilename, sinkLineNumber, sinkObject = self.get_pathnode_elements(pathnode)
@@ -267,8 +269,8 @@ class CheckmarxParser(object):
             categories = query.get('categories')
         return name, cwe, categories, queryId
 
-    # Map checkmarx report state to active/inactive status
     def isActive(self, state):
+        """Map checkmarx report state to active/inactive status"""
         # To verify, Confirmed, Urgent, Proposed not exploitable
         activeStates = ["0", "2", "3", "4"]
         return state in activeStates
@@ -285,37 +287,100 @@ class CheckmarxParser(object):
         else:
             return self._get_findings_xml(file, test)
 
+    def _parse_date(self, value):
+        if isinstance(value, str):
+            return parser.parse(value)
+        elif isinstance(value, dict) and isinstance(value.get("seconds"), int):
+            return datetime.datetime.utcfromtimestamp(value.get("seconds"))
+        else:
+            return None
+
     def _get_findings_json(self, file, test):
         """"""
         data = json.load(file)
         findings = []
         results = data.get("scanResults", [])
         for result_type in results:
-            for language in results[result_type].get("languages"):
-                for query in language.get("queries", []):
-                    descriptiondetails = query.get("description", "")
-                    group = ""
-                    title = query.get("queryName").replace("_", " ")
-                    if query.get('groupName'):
-                        group = query.get('groupName').replace('_', ' ')
-                    for vulnerability in query.get("vulnerabilities", []):
+            # manage sca part
+            if result_type == "sast":
+                for language in results[result_type].get("languages", []):
+                    for query in language.get("queries", []):
+                        descriptiondetails = query.get("description", "")
+                        group = ""
+                        title = query.get("queryName").replace("_", " ")
+                        if query.get('groupName'):
+                            group = query.get('groupName').replace('_', ' ')
+                        for vulnerability in query.get("vulnerabilities", []):
+                            finding = Finding(
+                                description=descriptiondetails,
+                                title=title,
+                                date=self._parse_date(vulnerability.get("firstFoundDate")),
+                                severity=vulnerability.get("severity").title(),
+                                active=(vulnerability.get("status") != "Not exploitable"),
+                                verified=(vulnerability.get("status") != "To verify"),
+                                test=test,
+                                cwe=vulnerability.get("cweId"),
+                                static_finding=True,
+                            )
+                            if vulnerability.get("id"):
+                                finding.unique_id_from_tool = vulnerability.get("id")
+                            else:
+                                finding.unique_id_from_tool = str(vulnerability.get("similarityId"))
+                            # get the last node and set some values
+                            if vulnerability.get('nodes'):
+                                last_node = vulnerability['nodes'][-1]
+                                finding.file_path = last_node.get("fileName")
+                                finding.line = last_node.get("line")
+                            finding.unsaved_tags = [result_type]
+                            findings.append(finding)
+            if result_type == "sca":
+                for package in results[result_type].get("packages", []):
+                    component_name = package.get("name").split("-")[-2]
+                    component_version = package.get("name").split("-")[-1]
+                    for vulnerability in package.get('vulnerabilities', []):
+                        cve = vulnerability.get('cveId')
                         finding = Finding(
-                            description=descriptiondetails,
-                            title=title,
-                            date=parser.parse(vulnerability.get("firstFoundDate")),
+                            title=f'{component_name}:{component_version} | {cve}',
+                            description=vulnerability.get("description"),
+                            date=self._parse_date(vulnerability.get("firstFoundDate")),
                             severity=vulnerability.get("severity").title(),
                             active=(vulnerability.get("status") != "Not exploitable"),
-                            verified=(vulnerability.get("status") != "To verify"),
+                            verified=(vulnerability.get("state") != "To verify"),
+                            component_name=component_name,
+                            component_version=component_version,
                             test=test,
-                            cwe=vulnerability.get("cweId"),
-                            static_finding=(result_type == "sast"),
-                            unique_id_from_tool=vulnerability.get("id"),
+                            cwe=int(vulnerability.get("cwe", 0)),
+                            static_finding=True,
                         )
-                        # get the last node and set some values
-                        if vulnerability.get('nodes'):
-                            last_node = vulnerability['nodes'][-1]
-                            finding.file_path = last_node.get("fileName")
-                            finding.line = last_node.get("line")
+                        if vulnerability.get("cveId"):
+                            finding.unsaved_vulnerability_ids = [vulnerability.get("cveId")]
+                        if vulnerability.get("id"):
+                            finding.unique_id_from_tool = vulnerability.get("id")
+                        else:
+                            finding.unique_id_from_tool = str(vulnerability.get("similarityId"))
                         finding.unsaved_tags = [result_type]
+                        findings.append(finding)
+            if result_type == "kics":
+                for kics_type in results[result_type].get("results", []):
+                    name = kics_type.get('name')
+                    for vulnerability in kics_type.get('vulnerabilities', []):
+                        finding = Finding(
+                            title=f'{name} | {vulnerability.get("issueType")}',
+                            description=vulnerability.get("description"),
+                            date=self._parse_date(vulnerability.get("firstFoundDate")),
+                            severity=vulnerability.get("severity").title(),
+                            active=(vulnerability.get("status") != "Not exploitable"),
+                            verified=(vulnerability.get("state") != "To verify"),
+                            file_path=vulnerability.get("fileName"),
+                            line=vulnerability.get("line", 0),
+                            severity_justification=vulnerability.get("actualValue"),
+                            test=test,
+                            static_finding=True,
+                        )
+                        if vulnerability.get("id"):
+                            finding.unique_id_from_tool = vulnerability.get("id")
+                        else:
+                            finding.unique_id_from_tool = str(vulnerability.get("similarityId"))
+                        finding.unsaved_tags = [result_type, name]
                         findings.append(finding)
         return findings

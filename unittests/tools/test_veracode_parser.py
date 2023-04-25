@@ -98,7 +98,6 @@ class TestVeracodeScannerParser(DojoTestCase):
         self.assertEqual(20, finding.cwe)
         self.assertEqual("commons-httpclient", finding.component_name)
         self.assertEqual("3.1", finding.component_version)
-        self.assertEqual("CVE-2012-6153", finding.unique_id_from_tool)
         self.assertEqual(4.3, finding.cvssv3_score)
 
     def test_parse_file_with_mitigated_finding(self):
@@ -111,6 +110,26 @@ class TestVeracodeScannerParser(DojoTestCase):
         self.assertTrue(finding.is_mitigated)
         self.assertEqual(datetime.datetime(2020, 6, 1, 10, 2, 1), finding.mitigated)
         self.assertEqual("app-1234_issue-1", finding.unique_id_from_tool)
+
+    def test_parse_file_with_mitigated_fixed_finding(self):
+        testfile = open("unittests/scans/veracode/mitigated_fixed_finding.xml")
+        parser = VeracodeParser()
+        findings = parser.get_findings(testfile, Test())
+        self.assertEqual(1, len(findings))
+        finding = findings[0]
+        self.assertEqual("Medium", finding.severity)
+        self.assertTrue(finding.is_mitigated)
+        self.assertEqual("app-1234_issue-1", finding.unique_id_from_tool)
+
+    def test_parse_file_with_mitigated_sca_finding(self):
+        testfile = open("unittests/scans/veracode/veracode_scan_sca_mitigated.xml")
+        parser = VeracodeParser()
+        findings = parser.get_findings(testfile, Test())
+        self.assertEqual(1, len(findings))
+        finding = findings[0]
+        self.assertEqual("Critical", finding.severity)
+        self.assertTrue(finding.is_mitigated)
+        self.assertEqual(datetime.datetime(2022, 9, 12, 14, 29, 18), finding.mitigated)
 
     def test_parse_file_with_dynamic_finding(self):
         testfile = open("unittests/scans/veracode/dynamic_finding.xml")
@@ -145,5 +164,18 @@ class TestVeracodeScannerParser(DojoTestCase):
         self.assertEqual(20, finding.cwe)
         self.assertEqual("commons-httpclient", finding.component_name)
         self.assertEqual("3.1", finding.component_version)
-        self.assertEqual("CVE-2012-6153", finding.unique_id_from_tool)
         self.assertEqual(4.3, finding.cvssv3_score)
+
+    def test_maven_component_name(self):
+        testfile = open("unittests/scans/veracode/veracode_maven.xml")
+        parser = VeracodeParser()
+        findings = parser.get_findings(testfile, Test())
+        self.assertEqual(1, len(findings))
+
+        finding = findings[0]
+        self.assertEqual("Critical", finding.severity)
+        self.assertEqual(1, len(finding.unsaved_vulnerability_ids))
+        self.assertEqual("CVE-2022-41852", finding.unsaved_vulnerability_ids[0])
+        self.assertEqual("commons-jxpath", finding.component_name)
+        self.assertEqual("1.3", finding.component_version)
+        self.assertEqual(9.8, finding.cvssv3_score)

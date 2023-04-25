@@ -92,8 +92,7 @@ to be created. Closely follow the steps below to guarantee success.
     DD_SOCIAL_AUTH_GOOGLE_OAUTH2_WHITELISTED_EMAILS = ['<email@example.com>']
     {{< /highlight >}}
 
-OKTA
-----
+## OKTA
 
 In a similar fashion to that of Google, using OKTA as a OAuth2 provider
 carries the same attributes and a similar procedure. Follow along below.
@@ -137,7 +136,7 @@ carries the same attributes and a similar procedure. Follow along below.
     DD_SOCIAL_AUTH_OKTA_OAUTH2_ENABLED=True,
     DD_SOCIAL_AUTH_OKTA_OAUTH2_KEY=(str, '**YOUR_CLIENT_ID_FROM_STEP_ABOVE**'),
     DD_SOCIAL_AUTH_OKTA_OAUTH2_SECRET=(str, '**YOUR_CLIENT_SECRET_FROM_STEP_ABOVE**'),
-    DD_SOCIAL_AUTH_OKTA_OAUTH2_API_URL=(str, 'https://{your-org-url}/oauth2/default'),
+    DD_SOCIAL_AUTH_OKTA_OAUTH2_API_URL=(str, 'https://{your-org-url}/oauth2'),
     {{< /highlight >}}
 
 If during the login process you get the following error: *The
@@ -158,7 +157,7 @@ in, it will try to match the UPN of the user to an existing e-mail from
 a user in Defect Dojo, and if no match is found, a new user will be
 created in Defect Dojo, associated with the unique id/value of the user
 provided by your Azure AD tenant. Then, you can assign roles to this
-user, such as 'staff' or 'superuser'
+user, such as 'superuser'.
 
 1.  Navigate to the following address and follow instructions to create
     a new app registration
@@ -312,22 +311,6 @@ DD_SOCIAL_AUTH_KEYCLOAK_ACCESS_TOKEN_URL: '<your token endpoint>'
 
 Optionally, you *can* set `DD_SOCIAL_AUTH_KEYCLOAK_LOGIN_BUTTON_TEXT` in order to customize the login button's text caption. 
 
-## GitHub
-1. Navigate to GitHub.com and follow instructions to create a new OAuth App [https://docs.github.com/en/developers/apps/building-oauth-apps/creating-an-oauth-app](https://docs.github.com/en/developers/apps/building-oauth-apps/creating-an-oauth-app)
-2. Choose a name for your application
-3. For the Redirect URI, enter the DefectDojo URL with the following
-    format
-    -   [https://the_hostname_you_have_dojo_deployed:your_server_port/complete/github/](https://the_hostname_you_have_dojo_deployed:your_server_port/complete/github/)
-4. Edit the settings (see [Configuration]({{< ref "/getting_started/configuration" >}})) with the following
-    information:
-    {{< highlight python >}}  
-    DD_SOCIAL_AUTH_GITHUB_KEY=(str, 'GitHub OAuth App Client ID'),  
-    DD_SOCIAL_AUTH_GITHUB_SECRET=(str, 'GitHub OAuth App Client Secret'),  
-    DD_SOCIAL_AUTH_GITHUB_OAUTH2_ENABLED = True  
-    {{< /highlight >}}
-5. Restart DefectDojo, and you should now see a **Login with GitHub**
-    button on the login page.
-
 ## GitHub Enterprise
 1.  Navigate to your GitHub Enterprise Server and follow instructions to create a new OAuth App [https://docs.github.com/en/enterprise-server/developers/apps/building-oauth-apps/creating-an-oauth-app](https://docs.github.com/en/enterprise-server/developers/apps/building-oauth-apps/creating-an-oauth-app)
 2. Choose a name for your application
@@ -416,6 +399,26 @@ Up to relase 1.15.0 the SAML integration was based on [https://github.com/fangli
 * DD_SAML2_ATTRIBUTES_MAP: Syntax has changed
 * DD_SAML2_CREATE_USER: Default value changed to False, to avoid security breaches
 
+## RemoteUser
+
+This implementation is suitable if the DefectDojo instance is placed behind HTTP Authentication Proxy.
+Dojo expects that the proxy will perform authentication and pass HTTP requests to the Dojo instance with filled HTTP headers.
+The proxy should check if an attacker is not trying to add a malicious HTTP header and bypass authentication.
+
+Values which need to be set:
+
+* `DD_AUTH_REMOTEUSER_ENABLED` - Needs to be set to `True`
+* `DD_AUTH_REMOTEUSER_USERNAME_HEADER` - Name of the header which contains the username
+* `DD_AUTH_REMOTEUSER_EMAIL_HEADER`(optional) - Name of the header which contains the email
+* `DD_AUTH_REMOTEUSER_FIRSTNAME_HEADER`(optional) - Name of the header which contains the first name
+* `DD_AUTH_REMOTEUSER_LASTNAME_HEADER`(optional) - Name of the header which contains the last name
+* `DD_AUTH_REMOTEUSER_GROUPS_HEADER`(optional) - Name of the header which contains the comma-separated list of groups; user will be assigned to these groups (missing groups will be created)
+* `DD_AUTH_REMOTEUSER_GROUPS_CLEANUP`(optional) - Same as [#automatic-import-of-user-groups](AzureAD implementation)
+* `DD_AUTH_REMOTEUSER_TRUSTED_PROXY` - Comma separated list of proxies; Simple IP and CIDR formats are supported
+* `DD_AUTH_REMOTEUSER_LOGIN_ONLY`(optional) - Check [Django documentation](https://docs.djangoproject.com/en/3.2/howto/auth-remote-user/#using-remote-user-on-login-pages-only)
+
+*WARNING:* There is possible spoofing of headers (for all `DD_AUTH_REMOTEUSER_xxx_HEADER` values). Read Warning in [Django documentation](https://docs.djangoproject.com/en/3.2/howto/auth-remote-user/#configuration)
+
 ## User Permissions
 
 When a new user is created via the social-auth, only the default permissions are active. This means that the newly created user does not have access to add, edit, nor delete anything within DefectDojo. There are two parameters in the System Settings to influence the permissions for newly created users:
@@ -424,13 +427,12 @@ When a new user is created via the social-auth, only the default permissions are
 
 When both the parameters `Default group` and `Default group role` are set, the new user will be a member of the given group with the given role, which will give him the respective permissions.
 
-### Staff user ###
+### Groups from Identity Providers
 
-Newly created users are neither staff nor superuser by default. The `is_staff` flag of a new user will be set to `True`, if the user's email address matches the regular expression in the parameter `Email pattern for staff users`. 
+Some Identity Providers are able to send list of groups to which should user belongs. This functionality is implemented only for Identity Providers mentioned below. For all others, we will be more than happy for contribution (hint: functions `assign_user_to_groups` and `cleanup_old_groups_for_user` from [`dojo/pipeline.py`](https://github.com/DefectDojo/django-DefectDojo/blob/master/dojo/pipeline.py) might be useful).
 
-**Example:**
-
-`.*@example.com` will make `alice@example.com` a staff user, while `bob@partner.example.com` or `chris@example.org` will be non-staff users.
+- [Azure](#automatic-import-of-user-groups): Check `DD_SOCIAL_AUTH_AZUREAD_TENANT_OAUTH2_GET_GROUPS` and `DD_SOCIAL_AUTH_AZUREAD_TENANT_OAUTH2_CLEANUP_GROUPS`
+- [RemoteUser](#remoteuser): Check `DD_AUTH_REMOTEUSER_GROUPS_HEADER` and `DD_AUTH_REMOTEUSER_GROUPS_CLEANUP`
 
 ## Login speed-up
 

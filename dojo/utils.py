@@ -20,14 +20,15 @@ from django.core.paginator import Paginator
 from django.urls import get_resolver, reverse
 from django.db.models import Q, Sum, Case, When, IntegerField, Value, Count
 from django.utils import timezone
+from django.utils.translation import gettext as _
 from django.dispatch import receiver
 from django.db.models.signals import post_save
 from django.db.models.query import QuerySet
 import calendar as tcalendar
 from dojo.github import add_external_issue_github, update_external_issue_github, close_external_issue_github, reopen_external_issue_github
 from dojo.models import Finding, Engagement, Finding_Group, Finding_Template, Product, \
-    Dojo_User, Test, User, System_Settings, Notifications, Endpoint, Benchmark_Type, \
-    Language_Type, Languages, Rule, Dojo_Group_Member, NOTIFICATION_CHOICES
+    Test, User, Dojo_User, System_Settings, Notifications, Endpoint, Benchmark_Type, \
+    Language_Type, Languages, Dojo_Group_Member, NOTIFICATION_CHOICES
 from asteval import Interpreter
 from dojo.notifications.helper import create_notification
 import logging
@@ -42,7 +43,7 @@ from django.contrib.auth.signals import user_logged_in, user_logged_out, user_lo
 
 logger = logging.getLogger(__name__)
 deduplicationLogger = logging.getLogger("dojo.specific-loggers.deduplication")
-
+WEEKDAY_FRIDAY = 4  # date.weekday() starts with 0
 
 """
 Helper functions for DefectDojo
@@ -430,56 +431,6 @@ def set_duplicate_reopen(new_finding, existing_finding):
     existing_finding.save()
 
 
-def do_apply_rules(new_finding, *args, **kwargs):
-    rules = Rule.objects.filter(applies_to='Finding', parent_rule=None)
-    for rule in rules:
-        child_val = True
-        child_list = [val for val in rule.child_rules.all()]
-        while (len(child_list) != 0):
-            child_val = child_val and child_rule(child_list.pop(), new_finding)
-        if child_val:
-            if rule.operator == 'Matches':
-                if getattr(new_finding, rule.match_field) == rule.match_text:
-                    if rule.application == 'Append':
-                        set_attribute_rule(new_finding, rule, (getattr(
-                            new_finding, rule.applied_field) + rule.text))
-                    else:
-                        set_attribute_rule(new_finding, rule, rule.text)
-                        new_finding.save(dedupe_option=False,
-                                         rules_option=False)
-            else:
-                if rule.match_text in getattr(new_finding, rule.match_field):
-                    if rule.application == 'Append':
-                        set_attribute_rule(new_finding, rule, (getattr(
-                            new_finding, rule.applied_field) + rule.text))
-                    else:
-                        set_attribute_rule(new_finding, rule, rule.text)
-                        new_finding.save(dedupe_option=False,
-                                         rules_option=False)
-
-
-def set_attribute_rule(new_finding, rule, value):
-    if rule.text == "True":
-        setattr(new_finding, rule.applied_field, True)
-    elif rule.text == "False":
-        setattr(new_finding, rule.applied_field, False)
-    else:
-        setattr(new_finding, rule.applied_field, value)
-
-
-def child_rule(rule, new_finding):
-    if rule.operator == 'Matches':
-        if getattr(new_finding, rule.match_field) == rule.match_text:
-            return True
-        else:
-            return False
-    else:
-        if rule.match_text in getattr(new_finding, rule.match_field):
-            return True
-        else:
-            return False
-
-
 def count_findings(findings):
     product_count = {}
     finding_count = {'low': 0, 'med': 0, 'high': 0, 'crit': 0}
@@ -628,7 +579,7 @@ def add_breadcrumb(parent=None,
     if top_level or crumbs is None:
         crumbs = [
             {
-                'title': 'Home',
+                'title': _('Home'),
                 'url': reverse('home')
             },
         ]
@@ -646,18 +597,14 @@ def add_breadcrumb(parent=None,
             obj_crumbs = parent.get_breadcrumbs()
             if title is not None:
                 obj_crumbs += [{
-                    'title':
-                    title,
-                    'url':
-                    request.get_full_path() if url is None else url
+                    'title': title,
+                    'url': request.get_full_path() if url is None else url
                 }]
         else:
             title_done = True
             obj_crumbs = [{
-                'title':
-                title,
-                'url':
-                request.get_full_path() if url is None else url
+                'title': title,
+                'url': request.get_full_path() if url is None else url
             }]
 
         for crumb in crumbs:
@@ -745,7 +692,6 @@ def get_punchcard_data(objs, start_date, weeks, view='Finding'):
 
         start_of_week = timezone.make_aware(datetime.combine(first_sunday, datetime.min.time()))
         start_of_next_week = start_of_week + relativedelta(weeks=1)
-        day_counts = [0, 0, 0, 0, 0, 0, 0]
 
         for day in severities_by_day:
             if view == 'Finding':
@@ -906,18 +852,17 @@ def get_period_counts_legacy(findings,
     }
 
 
-def get_period_counts(active_findings,
-                      findings,
+def get_period_counts(findings,
                       findings_closed,
                       accepted_findings,
                       period_interval,
                       start_date,
                       relative_delta='months'):
-    start_date = datetime(
-        start_date.year,
-        start_date.month,
-        start_date.day,
-        tzinfo=timezone.get_current_timezone())
+
+    tz = timezone.get_current_timezone()
+
+    start_date = datetime(start_date.year, start_date.month, start_date.day, tzinfo=tz)
+
     opened_in_period = list()
     active_in_period = list()
     accepted_in_period = list()
@@ -948,77 +893,64 @@ def get_period_counts(active_findings,
                 mitigated_time__range=[new_date, end_date]).count()
 
         if accepted_findings:
+            date_range = [
+                datetime(new_date.year, new_date.month, new_date.day, tzinfo=tz),
+                datetime(end_date.year, end_date.month, end_date.day, tzinfo=tz)
+            ]
             try:
-                risks_a = accepted_findings.filter(
-                    risk_acceptance__created__date__range=[
-                        datetime(
-                            new_date.year,
-                            new_date.month,
-                            1,
-                            tzinfo=timezone.get_current_timezone()),
-                        datetime(
-                            new_date.year,
-                            new_date.month,
-                            monthrange(new_date.year, new_date.month)[1],
-                            tzinfo=timezone.get_current_timezone())
-                    ])
+                risks_a = accepted_findings.filter(risk_acceptance__created__date__range=date_range)
             except:
-                risks_a = accepted_findings.filter(
-                    date__range=[
-                        datetime(
-                            new_date.year,
-                            new_date.month,
-                            1,
-                            tzinfo=timezone.get_current_timezone()),
-                        datetime(
-                            new_date.year,
-                            new_date.month,
-                            monthrange(new_date.year, new_date.month)[1],
-                            tzinfo=timezone.get_current_timezone())
-                    ])
+                risks_a = accepted_findings.filter(date__range=date_range)
         else:
             risks_a = None
 
-        crit_count, high_count, med_count, low_count, closed_count = [
+        f_crit_count, f_high_count, f_med_count, f_low_count, f_closed_count = [
             0, 0, 0, 0, 0
         ]
+        ra_crit_count, ra_high_count, ra_med_count, ra_low_count, ra_closed_count = [
+            0, 0, 0, 0, 0
+        ]
+        active_crit_count, active_high_count, active_med_count, active_low_count, active_closed_count = [
+            0, 0, 0, 0, 0
+        ]
+
         for finding in findings:
             try:
                 severity = finding.severity
+                active = finding.active
+#                risk_accepted = finding.risk_accepted TODO: in future release
             except:
                 severity = finding.finding.severity
-            try:
-                if new_date <= datetime.combine(
-                        finding.date, datetime.min.time()
-                ).replace(tzinfo=timezone.get_current_timezone()) <= end_date:
-                    if severity == 'Critical':
-                        crit_count += 1
-                    elif severity == 'High':
-                        high_count += 1
-                    elif severity == 'Medium':
-                        med_count += 1
-                    elif severity == 'Low':
-                        low_count += 1
-            except:
-                if new_date <= finding.date <= end_date:
-                    if severity == 'Critical':
-                        crit_count += 1
-                    elif severity == 'High':
-                        high_count += 1
-                    elif severity == 'Medium':
-                        med_count += 1
-                    elif severity == 'Low':
-                        low_count += 1
-                pass
+                active = finding.finding.active
+#                risk_accepted = finding.finding.risk_accepted
 
-        total = crit_count + high_count + med_count + low_count
-        opened_in_period.append(
-            [(tcalendar.timegm(new_date.timetuple()) * 1000), new_date,
-             crit_count, high_count, med_count, low_count, total,
-             closed_in_range_count])
-        crit_count, high_count, med_count, low_count, closed_count = [
-            0, 0, 0, 0, 0
-        ]
+            try:
+                f_time = datetime.combine(finding.date, datetime.min.time()).replace(tzinfo=tz)
+            except:
+                f_time = finding.date
+
+            if f_time <= end_date:
+                if severity == 'Critical':
+                    if new_date <= f_time:
+                        f_crit_count += 1
+                    if active:
+                        active_crit_count += 1
+                elif severity == 'High':
+                    if new_date <= f_time:
+                        f_high_count += 1
+                    if active:
+                        active_high_count += 1
+                elif severity == 'Medium':
+                    if new_date <= f_time:
+                        f_med_count += 1
+                    if active:
+                        active_med_count += 1
+                elif severity == 'Low':
+                    if new_date <= f_time:
+                        f_low_count += 1
+                    if active:
+                        active_low_count += 1
+
         if risks_a is not None:
             for finding in risks_a:
                 try:
@@ -1026,52 +958,29 @@ def get_period_counts(active_findings,
                 except:
                     severity = finding.finding.severity
                 if severity == 'Critical':
-                    crit_count += 1
+                    ra_crit_count += 1
                 elif severity == 'High':
-                    high_count += 1
+                    ra_high_count += 1
                 elif severity == 'Medium':
-                    med_count += 1
+                    ra_med_count += 1
                 elif severity == 'Low':
-                    low_count += 1
+                    ra_low_count += 1
 
-        total = crit_count + high_count + med_count + low_count
+        total = f_crit_count + f_high_count + f_med_count + f_low_count
+        opened_in_period.append(
+            [(tcalendar.timegm(new_date.timetuple()) * 1000), new_date,
+             f_crit_count, f_high_count, f_med_count, f_low_count, total,
+             closed_in_range_count])
+
+        total = ra_crit_count + ra_high_count + ra_med_count + ra_low_count
         accepted_in_period.append(
             [(tcalendar.timegm(new_date.timetuple()) * 1000), new_date,
-             crit_count, high_count, med_count, low_count, total])
-        crit_count, high_count, med_count, low_count, closed_count = [
-            0, 0, 0, 0, 0
-        ]
-        for finding in active_findings:
-            try:
-                severity = finding.severity
-            except:
-                severity = finding.finding.severity
-            try:
-                if datetime.combine(finding.date, datetime.min.time()).replace(
-                        tzinfo=timezone.get_current_timezone()) <= end_date:
-                    if severity == 'Critical':
-                        crit_count += 1
-                    elif severity == 'High':
-                        high_count += 1
-                    elif severity == 'Medium':
-                        med_count += 1
-                    elif severity == 'Low':
-                        low_count += 1
-            except:
-                if finding.date <= end_date:
-                    if severity == 'Critical':
-                        crit_count += 1
-                    elif severity == 'High':
-                        high_count += 1
-                    elif severity == 'Medium':
-                        med_count += 1
-                    elif severity == 'Low':
-                        low_count += 1
-                pass
-        total = crit_count + high_count + med_count + low_count
+             ra_crit_count, ra_high_count, ra_med_count, ra_low_count, total])
+
+        total = active_crit_count + active_high_count + active_med_count + active_low_count
         active_in_period.append(
             [(tcalendar.timegm(new_date.timetuple()) * 1000), new_date,
-             crit_count, high_count, med_count, low_count, total])
+             active_crit_count, active_high_count, active_med_count, active_low_count, total])
 
     return {
         'opened_per_period': opened_in_period,
@@ -1561,6 +1470,37 @@ def get_celery_worker_status():
         return False
 
 
+def get_work_days(start: date, end: date):
+    """
+    Math function to get workdays between 2 dates.
+    Can be used only as fallback as it doesn't know
+    about specific country holidays or extra working days.
+    https://stackoverflow.com/questions/3615375/number-of-days-between-2-dates-excluding-weekends/71977946#71977946
+    """
+    from datetime import timedelta
+
+    # if the start date is on a weekend, forward the date to next Monday
+    if start.weekday() > WEEKDAY_FRIDAY:
+        start = start + timedelta(days=7 - start.weekday())
+
+    # if the end date is on a weekend, rewind the date to the previous Friday
+    if end.weekday() > WEEKDAY_FRIDAY:
+        end = end - timedelta(days=end.weekday() - WEEKDAY_FRIDAY)
+
+    if start > end:
+        return 0
+    # that makes the difference easy, no remainders etc
+    diff_days = (end - start).days + 1
+    weeks = int(diff_days / 7)
+
+    remainder = end.weekday() - start.weekday() + 1
+
+    if remainder != 0 and end.weekday() < start.weekday():
+        remainder = 5 + remainder
+
+    return weeks * 5 + remainder
+
+
 # Used to display the counts and enabled tabs in the product view
 class Product_Tab():
     def __init__(self, product, title=None, tab=None):
@@ -1575,10 +1515,10 @@ class Product_Tab():
                                                           out_of_scope=False,
                                                           active=True,
                                                           mitigated__isnull=True).count()
-        self.endpoints_count = Endpoint.objects.filter(
-            product=self.product).count()
-        self.endpoint_hosts_count = Endpoint.objects.filter(
-            product=self.product).values('host').distinct().count()
+        active_endpoints = Endpoint.objects.filter(
+            product=self.product, finding__active=True, finding__mitigated__isnull=True)
+        self.endpoints_count = active_endpoints.distinct().count()
+        self.endpoint_hosts_count = active_endpoints.values('host').distinct().count()
         self.benchmark_type = Benchmark_Type.objects.filter(
             enabled=True).order_by('name')
         self.engagement = None
@@ -1690,7 +1630,7 @@ def get_full_url(relative_url):
     if settings.SITE_URL:
         return settings.SITE_URL + relative_url
     else:
-        logger.warn('SITE URL undefined in settings, full_url cannot be created')
+        logger.warning('SITE URL undefined in settings, full_url cannot be created')
         return "settings.SITE_URL" + relative_url
 
 
@@ -1698,10 +1638,11 @@ def get_site_url():
     if settings.SITE_URL:
         return settings.SITE_URL
     else:
-        logger.warn('SITE URL undefined in settings, full_url cannot be created')
+        logger.warning('SITE URL undefined in settings, full_url cannot be created')
         return "settings.SITE_URL"
 
 
+@receiver(post_save, sender=User)
 @receiver(post_save, sender=Dojo_User)
 def user_post_save(sender, instance, created, **kwargs):
     # For new users we create a Notifications object so the default 'alert' notifications work and
@@ -1732,11 +1673,10 @@ def user_post_save(sender, instance, created, **kwargs):
                     role=system_settings.default_group_role)
                 dojo_group_member.save()
 
-    if settings.FEATURE_CONFIGURATION_AUTHORIZATION:
-        # Superusers shall always be staff
-        if instance.is_superuser and not instance.is_staff:
-            instance.is_staff = True
-            instance.save()
+    # Superusers shall always be staff
+    if instance.is_superuser and not instance.is_staff:
+        instance.is_staff = True
+        instance.save()
 
 
 @receiver(post_save, sender=Engagement)
@@ -1843,33 +1783,33 @@ def sla_compute_and_notify(*args, **kwargs):
             jira_helper.add_simple_jira_comment(jira_instance, jira_issue, title)
 
     # exit early on flags
-    if not settings.SLA_NOTIFY_ACTIVE and not settings.SLA_NOTIFY_ACTIVE_VERIFIED_ONLY:
+    system_settings = System_Settings.objects.get()
+    if not system_settings.enable_notify_sla_active and not system_settings.enable_notify_sla_active_verified:
         logger.info("Will not notify on SLA breach per user configured settings")
         return
 
     jira_issue = None
     jira_instance = None
     try:
-        system_settings = System_Settings.objects.get()
         if system_settings.enable_finding_sla:
             logger.info("About to process findings for SLA notifications.")
             logger.debug("Active {}, Verified {}, Has JIRA {}, pre-breach {}, post-breach {}".format(
-                settings.SLA_NOTIFY_ACTIVE,
-                settings.SLA_NOTIFY_ACTIVE_VERIFIED_ONLY,
-                settings.SLA_NOTIFY_WITH_JIRA_ONLY,
+                system_settings.enable_notify_sla_active,
+                system_settings.enable_notify_sla_active_verified,
+                system_settings.enable_notify_sla_jira_only,
                 settings.SLA_NOTIFY_PRE_BREACH,
                 settings.SLA_NOTIFY_POST_BREACH,
             ))
 
             query = None
-            if settings.SLA_NOTIFY_ACTIVE:
+            if system_settings.enable_notify_sla_active:
                 query = Q(active=True, is_mitigated=False, duplicate=False)
-            if settings.SLA_NOTIFY_ACTIVE_VERIFIED_ONLY:
+            if system_settings.enable_notify_sla_active_verified:
                 query = Q(active=True, verified=True, is_mitigated=False, duplicate=False)
             logger.debug("My query: {}".format(query))
 
             no_jira_findings = {}
-            if settings.SLA_NOTIFY_WITH_JIRA_ONLY:
+            if system_settings.enable_notify_sla_jira_only:
                 logger.debug("Ignoring findings that are not linked to a JIRA issue")
                 no_jira_findings = Finding.objects.exclude(jira_issue__isnull=False)
 
@@ -1936,7 +1876,14 @@ def sla_compute_and_notify(*args, **kwargs):
                 if (sla_age < 0):
                     post_breach_count += 1
                     logger.info("Finding {} has breached by {} days.".format(finding.id, abs(sla_age)))
-                    _notify(finding, 'Finding {} - SLA breached by {} day(s)! Overdue notice'.format(finding.id, abs(sla_age)))
+                    abs_sla_age = abs(sla_age)
+                    if not system_settings.enable_notify_sla_exponential_backoff or abs_sla_age == 1 or (abs_sla_age & (abs_sla_age - 1) == 0):
+                        period = "day"
+                        if abs_sla_age > 1:
+                            period = "days"
+                        _notify(finding, 'Finding {} - SLA breached by {} {}! Overdue notice'.format(finding.id, abs_sla_age, period))
+                    else:
+                        logger.info("Skipping notification as exponential backoff is enabled and the SLA is not a power of two")
                 # The finding is within the pre-breach period
                 elif (sla_age > 0) and (sla_age <= settings.SLA_NOTIFY_PRE_BREACH):
                     pre_breach_count += 1
@@ -1995,7 +1942,7 @@ def create_bleached_link(url, title):
     link += '\">'
     link += title
     link += '</a>'
-    return bleach.clean(link, tags=['a'], attributes={'a': ['href', 'target', 'title']})
+    return bleach.clean(link, tags={'a'}, attributes={'a': ['href', 'target', 'title']})
 
 
 def get_object_or_none(klass, *args, **kwargs):
@@ -2130,6 +2077,8 @@ def mass_model_updater(model_type, models, function, fields, page_size=1000, ord
                     model_type.objects.bulk_update(batch, fields)
                 batch = []
                 logger.debug('%s%s out of %s models processed ...', log_prefix, i, total_count)
+
+        logger.info('%s%s out of %s models processed ...', log_prefix, i, total_count)
 
     if fields:
         model_type.objects.bulk_update(batch, fields)
@@ -2300,7 +2249,50 @@ def log_user_logout(sender, request, user, **kwargs):
 @receiver(user_login_failed)
 def log_user_login_failed(sender, credentials, request, **kwargs):
 
-    logger.warning('login failed for: {credentials} via ip: {ip}'.format(
-        credentials=credentials['username'],
-        ip=request.META['REMOTE_ADDR']
-    ))
+    if 'username' in credentials:
+        logger.warning('login failed for: {credentials} via ip: {ip}'.format(
+            credentials=credentials['username'],
+            ip=request.META['REMOTE_ADDR']
+        ))
+    else:
+        logger.error('login failed because of missing username via ip: {ip}'.format(
+            ip=request.META['REMOTE_ADDR']
+        ))
+
+
+def get_password_requirements_string():
+    s = 'Password must contain {minimum_length} to {maximum_length} characters'.format(
+        minimum_length=int(get_system_setting('minimum_password_length')),
+        maximum_length=int(get_system_setting('maximum_password_length')))
+
+    if bool(get_system_setting('lowercase_character_required')):
+        s += ', one lowercase letter (a-z)'
+    if bool(get_system_setting('uppercase_character_required')):
+        s += ', one uppercase letter (A-Z)'
+    if bool(get_system_setting('number_character_required')):
+        s += ', one number (0-9)'
+    if bool(get_system_setting('special_character_required')):
+        s += ', one special chacter (()[]{}|\`~!@#$%^&*_-+=;:\'\",<>./?)'  # noqa W605
+
+    if s.count(', ') == 1:
+        password_requirements_string = s.rsplit(', ', 1)[0] + ' and ' + s.rsplit(', ', 1)[1]
+    elif s.count(', ') > 1:
+        password_requirements_string = s.rsplit(', ', 1)[0] + ', and ' + s.rsplit(', ', 1)[1]
+    else:
+        password_requirements_string = s
+
+    return password_requirements_string + '.'
+
+
+def get_zero_severity_level():
+    return {'Critical': 0, 'High': 0, 'Medium': 0, 'Low': 0, 'Info': 0}
+
+
+def sum_by_severity_level(metrics):
+    values = get_zero_severity_level()
+
+    for m in metrics:
+        if values.get(m.severity) is not None:
+            values[m.severity] += 1
+
+    return values

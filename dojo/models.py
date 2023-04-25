@@ -14,6 +14,7 @@ from django.contrib.auth.models import Group
 from django.db.models.expressions import Case, When
 from django.urls import reverse
 from django.core.validators import RegexValidator, validate_ipv46_address
+from django.core.files.base import ContentFile
 from django.core.exceptions import ValidationError
 from django.db import models, connection
 from django.db.models import Q, Count
@@ -36,7 +37,6 @@ from django.db.models import JSONField
 import hyperlink
 from cvss import CVSS3
 from dojo.settings.settings import SLA_BUSINESS_DAYS
-from numpy import busday_count
 
 
 logger = logging.getLogger(__name__)
@@ -304,6 +304,10 @@ class System_Settings(models.Model):
     jira_labels = models.CharField(max_length=200, blank=True, null=True,
                                    help_text=_('JIRA issue labels space seperated'))
 
+    add_vulnerability_id_to_jira_label = models.BooleanField(default=False,
+                                        verbose_name=_('Add vulnerability Id as a JIRA label'),
+                                        blank=False)
+
     enable_github = models.BooleanField(default=False,
                                       verbose_name=_('Enable GITHUB integration'),
                                       blank=False)
@@ -390,20 +394,30 @@ class System_Settings(models.Model):
         verbose_name=_("Enable Finding SLA's"),
         help_text=_("Enables Finding SLA's for time to remediate."))
 
-    sla_critical = models.IntegerField(default=7,
-                                          verbose_name=_('Critical Finding SLA Days'),
-                                          help_text=_('# of days to remediate a critical finding.'))
+    enable_notify_sla_active = models.BooleanField(
+        default=False,
+        blank=False,
+        verbose_name=_("Enable Notify SLA's Breach for active Findings"),
+        help_text=_("Enables Notify when time to remediate according to Finding SLA's is breached for active Findings."))
 
-    sla_high = models.IntegerField(default=30,
-                                          verbose_name=_('High Finding SLA Days'),
-                                          help_text=_('# of days to remediate a high finding.'))
-    sla_medium = models.IntegerField(default=90,
-                                          verbose_name=_('Medium Finding SLA Days'),
-                                          help_text=_('# of days to remediate a medium finding.'))
+    enable_notify_sla_active_verified = models.BooleanField(
+        default=False,
+        blank=False,
+        verbose_name=_("Enable Notify SLA's Breach for active, verified Findings"),
+        help_text=_("Enables Notify when time to remediate according to Finding SLA's is breached for active, verified Findings."))
 
-    sla_low = models.IntegerField(default=120,
-                                          verbose_name=_('Low Finding SLA Days'),
-                                          help_text=_('# of days to remediate a low finding.'))
+    enable_notify_sla_jira_only = models.BooleanField(
+        default=False,
+        blank=False,
+        verbose_name=_("Enable Notify SLA's Breach for Findings linked to JIRA"),
+        help_text=_("Enables Notify when time to remediate according to Finding SLA's is breached for Findings that are linked to JIRA issues."))
+
+    enable_notify_sla_exponential_backoff = models.BooleanField(
+        default=False,
+        blank=False,
+        verbose_name=_("Enable an exponential backoff strategy for SLA breach notifications."),
+        help_text=_("Enable an exponential backoff strategy for SLA breach notifications, e.g. 1, 2, 4, 8, etc. Otherwise it alerts every day"))
+
     allow_anonymous_survey_repsonse = models.BooleanField(
         default=False,
         blank=False,
@@ -414,9 +428,6 @@ class System_Settings(models.Model):
     disclaimer = models.TextField(max_length=3000, default='', blank=True,
                                   verbose_name=_('Custom Disclaimer'),
                                   help_text=_("Include this custom disclaimer on all notifications and generated reports"))
-    column_widths = models.TextField(max_length=1500, blank=True)
-    drive_folder_ID = models.CharField(max_length=100, blank=True)
-    email_address = models.EmailField(max_length=100, blank=True)
     risk_acceptance_form_default_days = models.IntegerField(null=True, blank=True, default=180, help_text=_("Default expiry period for risk acceptance form."))
     risk_acceptance_notify_before_expiration = models.IntegerField(null=True, blank=True, default=10,
                     verbose_name=_('Risk acceptance expiration heads up days'), help_text=_("Notify X days before risk acceptance expires. Leave empty to disable."))
@@ -440,16 +451,6 @@ class System_Settings(models.Model):
         blank=False,
         verbose_name=_('Enable Endpoint Metadata Import'),
         help_text=_("With this setting turned off, endpoint metadata import will be disabled in the user interface."))
-    enable_google_sheets = models.BooleanField(
-        default=False,
-        blank=False,
-        verbose_name=_('Enable Google Sheets Integration'),
-        help_text=_("With this setting turned off, the Google sheets integration will be disabled in the user interface."))
-    enable_rules_framework = models.BooleanField(
-        default=False,
-        blank=False,
-        verbose_name=_('Enable Rules Framework'),
-        help_text=_("With this setting turned off, the rules framwork will be disabled in the user interface."))
     enable_user_profile_editable = models.BooleanField(
         default=True,
         blank=False,
@@ -487,12 +488,34 @@ class System_Settings(models.Model):
         default='',
         blank=True,
         help_text=_("New users will only be assigned to the default group, when their email address matches this regex pattern. This is optional condition."))
-    staff_user_email_pattern = models.CharField(
-        max_length=200,
-        default='',
-        blank=True,
-        verbose_name=_('Email pattern for staff users'),
-        help_text=_("When the email address of a new user created by OAuth2 matches this regex pattern, their is_staff flag will be set to True."))
+    minimum_password_length = models.IntegerField(
+        default=9,
+        verbose_name=_('Minimum password length'),
+        help_text=_("Requires user to set passwords greater than minimum length."))
+    maximum_password_length = models.IntegerField(
+        default=48,
+        verbose_name=_('Maximum password length'),
+        help_text=_("Requires user to set passwords less than maximum length."))
+    number_character_required = models.BooleanField(
+        default=True,
+        blank=False,
+        verbose_name=_("Password must contain one digit"),
+        help_text=_("Requires user passwords to contain at least one digit (0-9)."))
+    special_character_required = models.BooleanField(
+        default=True,
+        blank=False,
+        verbose_name=_("Password must contain one special character"),
+        help_text=_("Requires user passwords to contain at least one special character (()[]{}|\`~!@#$%^&*_-+=;:\'\",<>./?)."))  # noqa W605
+    lowercase_character_required = models.BooleanField(
+        default=True,
+        blank=False,
+        verbose_name=_("Password must contain one lowercase letter"),
+        help_text=_("Requires user passwords to contain at least one lowercase letter (a-z)."))
+    uppercase_character_required = models.BooleanField(
+        default=True,
+        blank=False,
+        verbose_name=_("Password must contain one uppercase letter"),
+        help_text=_("Requires user passwords to contain at least one uppercase letter (A-Z)."))
 
     from dojo.middleware import System_Settings_Manager
     objects = System_Settings_Manager()
@@ -558,6 +581,13 @@ class NoteHistory(models.Model):
                                 default=get_current_datetime)
     current_editor = models.ForeignKey(Dojo_User, editable=False, null=True, on_delete=models.CASCADE)
 
+    def copy(self):
+        copy = self
+        copy.pk = None
+        copy.id = None
+        copy.save()
+        return copy
+
 
 class Notes(models.Model):
     note_type = models.ForeignKey(Note_Type, related_name='note_type', null=True, blank=True, on_delete=models.CASCADE)
@@ -579,15 +609,61 @@ class Notes(models.Model):
     def __str__(self):
         return self.entry
 
+    def copy(self):
+        copy = self
+        # Save the necessary ManyToMany relationships
+        old_history = list(self.history.all())
+        # Wipe the IDs of the new object
+        copy.pk = None
+        copy.id = None
+        # Save the object before setting any ManyToMany relationships
+        copy.save()
+        # Copy the history
+        for history in old_history:
+            copy.history.add(history.copy())
+
+        return copy
+
 
 class FileUpload(models.Model):
     title = models.CharField(max_length=100, unique=True)
     file = models.FileField(upload_to=UniqueUploadNameProvider('uploaded_files'))
 
+    def copy(self):
+        copy = self
+        # Wipe the IDs of the new object
+        copy.pk = None
+        copy.id = None
+        # Add unique modifier to file name
+        copy.title = '{} - clone-{}'.format(self.title, str(uuid4())[:8])
+        # Create new unique file name
+        current_url = self.file.url
+        _, current_full_filename = current_url.rsplit('/', 1)
+        _, extension = current_full_filename.split('.', 1)
+        new_file = ContentFile(self.file.read(), name='{}.{}'.format(uuid4(), extension))
+        copy.file = new_file
+        copy.save()
+
+        return copy
+
+    def get_accessible_url(self, obj, obj_id):
+        if isinstance(obj, Engagement):
+            obj_type = 'Engagement'
+        elif isinstance(obj, Test):
+            obj_type = 'Test'
+        elif isinstance(obj, Finding):
+            obj_type = 'Finding'
+
+        return 'access_file/{file_id}/{obj_id}/{obj_type}'.format(
+            file_id=self.id,
+            obj_id=obj_id,
+            obj_type=obj_type
+        )
+
 
 class Product_Type(models.Model):
     """Product types represent the top level model, these can be business unit divisions, different offices or locations, development teams, or any other logical way of distinguishing “types” of products.
-
+`
        Examples:
          * IAM Team
          * Internal / 3rd Party
@@ -734,6 +810,47 @@ class DojoMeta(models.Model):
                            ('finding', 'name'))
 
 
+class SLA_Configuration(models.Model):
+    name = models.CharField(max_length=128, unique=True, blank=False, verbose_name=_('Custom SLA Name'),
+        help_text=_('A unique name for the set of SLAs.')
+    )
+
+    description = models.CharField(max_length=512, null=True, blank=True)
+    critical = models.IntegerField(default=7, verbose_name=_('Critical Finding SLA Days'),
+                                          help_text=_('number of days to remediate a critical finding.'))
+    high = models.IntegerField(default=30, verbose_name=_('High Finding SLA Days'),
+                                          help_text=_('number of days to remediate a high finding.'))
+    medium = models.IntegerField(default=90, verbose_name=_('Medium Finding SLA Days'),
+                                          help_text=_('number of days to remediate a medium finding.'))
+    low = models.IntegerField(default=120, verbose_name=_('Low Finding SLA Days'),
+                                          help_text=_('number of days to remediate a low finding.'))
+
+    def clean(self):
+
+        sla_days = [self.critical, self.high, self.medium, self.low]
+
+        for sla_day in sla_days:
+            if sla_day < 1:
+                raise ValidationError('SLA Days must be at least 1')
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        ordering = ['name']
+
+    def delete(self, *args, **kwargs):
+        logger.debug('%d sla configuration delete', self.id)
+
+        if self.id != 1:
+            super().delete(*args, **kwargs)
+        else:
+            raise ValidationError("Unable to delete default SLA Configuration")
+
+    def get_summary(self):
+        return f'{self.name} - Critical: {self.critical}, High: {self.high}, Medium: {self.medium}, Low: {self.low}'
+
+
 class Product(models.Model):
     WEB_PLATFORM = 'web'
     IOT = 'iot'
@@ -801,6 +918,12 @@ class Product(models.Model):
     prod_type = models.ForeignKey(Product_Type, related_name='prod_type',
                                   null=False, blank=False, on_delete=models.CASCADE)
     updated = models.DateTimeField(auto_now=True, null=True)
+    sla_configuration = models.ForeignKey(SLA_Configuration,
+                                          related_name='sla_config',
+                                          null=False,
+                                          blank=False,
+                                          default=1,
+                                          on_delete=models.RESTRICT)
     tid = models.IntegerField(default=0, editable=False)
     members = models.ManyToManyField(Dojo_User, through='Product_Member', related_name='product_members', blank=True)
     authorization_groups = models.ManyToManyField(Dojo_Group, through='Product_Group', related_name='product_groups', blank=True)
@@ -1178,6 +1301,36 @@ class Engagement(models.Model):
                                         self.target_start.strftime(
                                             "%b %d, %Y"))
 
+    def copy(self):
+        copy = self
+        # Save the necessary ManyToMany relationships
+        old_notes = list(self.notes.all())
+        old_files = list(self.files.all())
+        old_tags = list(self.tags.all())
+        old_risk_acceptances = list(self.risk_acceptance.all())
+        old_tests = list(Test.objects.filter(engagement=self))
+        # Wipe the IDs of the new object
+        copy.pk = None
+        copy.id = None
+        # Save the object before setting any ManyToMany relationships
+        copy.save()
+        # Copy the notes
+        for notes in old_notes:
+            copy.notes.add(notes.copy())
+        # Copy the files
+        for files in old_files:
+            copy.files.add(files.copy())
+        # Copy the tests
+        for test in old_tests:
+            test.copy(engagement=copy)
+        # Copy the risk_acceptances
+        for risk_acceptance in old_risk_acceptances:
+            copy.risk_acceptance.add(risk_acceptance.copy(engagement=copy))
+        # Assign any tags
+        copy.tags.set(old_tags)
+
+        return copy
+
     def get_breadcrumbs(self):
         bc = self.product.get_breadcrumbs()
         bc += [{'title': str(self),
@@ -1228,7 +1381,7 @@ class Endpoint_Params(models.Model):
 
 
 class Endpoint_Status(models.Model):
-    date = models.DateTimeField(default=get_current_date)
+    date = models.DateField(default=get_current_date)
     last_modified = models.DateTimeField(null=True, editable=False, default=get_current_datetime)
     mitigated = models.BooleanField(default=False, blank=True)
     mitigated_time = models.DateTimeField(editable=False, null=True, blank=True)
@@ -1243,17 +1396,26 @@ class Endpoint_Status(models.Model):
     def age(self):
 
         if self.mitigated:
-            diff = self.mitigated_time.date() - self.date.date()
+            diff = self.mitigated_time.date() - self.date
         else:
-            diff = get_current_date() - self.date.date()
+            diff = get_current_date() - self.date
         days = diff.days
         return days if days > 0 else 0
 
     def __str__(self):
-        field_values = []
-        for field in self._meta.get_fields():
-            field_values.append(str(getattr(self, field.name, '')))
-        return ' '.join(field_values)
+        return "'{}' on '{}'".format(str(self.finding), str(self.endpoint))
+
+    def copy(self, finding=None):
+        copy = self
+        current_endpoint = self.endpoint
+        copy.pk = None
+        copy.id = None
+        if finding:
+            copy.finding = finding
+        copy.endpoint = current_endpoint
+        copy.save()
+
+        return copy
 
     class Meta:
         indexes = [
@@ -1286,7 +1448,10 @@ class Endpoint(models.Model):
                                           "be omitted. For example 'section-13', 'paragraph-2'."))
     product = models.ForeignKey(Product, null=True, blank=True, on_delete=models.CASCADE)
     endpoint_params = models.ManyToManyField(Endpoint_Params, blank=True, editable=False)
-    endpoint_status = models.ManyToManyField(Endpoint_Status, blank=True, related_name='endpoint_endpoint_status')
+    findings = models.ManyToManyField("Finding",
+                                      blank=True,
+                                      verbose_name=_('Findings'),
+                                      through=Endpoint_Status)
 
     tags = TagField(blank=True, force_lowercase=True, help_text=_("Add tags that help describe this endpoint. Choose from the list or add new tags. Press Enter key to add."))
 
@@ -1445,27 +1610,29 @@ class Endpoint(models.Model):
 
     @property
     def mitigated(self):
-        return not self.vulnerable()
+        return not self.vulnerable
 
+    @property
     def vulnerable(self):
-        return self.active_findings_count() > 0
+        return self.active_findings_count > 0
 
-    def findings(self):
-        return Finding.objects.filter(endpoints=self).distinct()
-
+    @property
     def findings_count(self):
-        return self.findings().count()
+        return self.findings.all().count()
 
     def active_findings(self):
-        findings = self.findings().filter(active=True,
-                                      verified=True,
+        findings = self.findings.filter(active=True,
                                       out_of_scope=False,
                                       mitigated__isnull=True,
                                       false_p=False,
-                                      duplicate=False).order_by('numerical_severity')
-        findings = findings.filter(endpoint_status__mitigated=False)
+                                      duplicate=False,
+                                      status_finding__mitigated=False,
+                                      status_finding__false_positive=False,
+                                      status_finding__out_of_scope=False,
+                                      status_finding__risk_accepted=False).order_by('numerical_severity')
         return findings
 
+    @property
     def active_findings_count(self):
         return self.active_findings().count()
 
@@ -1473,32 +1640,49 @@ class Endpoint(models.Model):
         return Endpoint.objects.filter(host=self.host,
                                        product=self.product).distinct()
 
+    @property
     def host_endpoints_count(self):
         return self.host_endpoints().count()
 
     def host_mitigated_endpoints(self):
-        meps = Endpoint_Status.objects.filter(endpoint__in=self.host_endpoints(), mitigated=True)
-        return Endpoint.objects.filter(endpoint_status__in=meps).distinct()
+        meps = Endpoint_Status.objects \
+                  .filter(endpoint__in=self.host_endpoints()) \
+                  .filter(Q(mitigated=True) |
+                          Q(false_positive=True) |
+                          Q(out_of_scope=True) |
+                          Q(risk_accepted=True) |
+                          Q(finding__out_of_scope=True) |
+                          Q(finding__mitigated__isnull=False) |
+                          Q(finding__false_p=True) |
+                          Q(finding__duplicate=True) |
+                          Q(finding__active=False))
+        return Endpoint.objects.filter(status_endpoint__in=meps).distinct()
 
+    @property
     def host_mitigated_endpoints_count(self):
         return self.host_mitigated_endpoints().count()
 
     def host_findings(self):
         return Finding.objects.filter(endpoints__in=self.host_endpoints()).distinct()
 
+    @property
     def host_findings_count(self):
-        return self.host_finding().count()
+        return self.host_findings().count()
 
     def host_active_findings(self):
-        findings = self.host_findings().filter(active=True,
-                                           verified=True,
-                                           out_of_scope=False,
-                                           mitigated__isnull=True,
-                                           false_p=False,
-                                           duplicate=False).order_by('numerical_severity')
-        findings = findings.filter(endpoint_status__mitigated=False)
+        findings = Finding.objects.filter(active=True,
+                                        out_of_scope=False,
+                                        mitigated__isnull=True,
+                                        false_p=False,
+                                        duplicate=False,
+                                        status_finding__mitigated=False,
+                                        status_finding__false_positive=False,
+                                        status_finding__out_of_scope=False,
+                                        status_finding__risk_accepted=False,
+                                        endpoints__in=self.host_endpoints()).order_by('numerical_severity')
         return findings
 
+    @property
     def host_active_findings_count(self):
         return self.host_active_findings().count()
 
@@ -1629,6 +1813,34 @@ class Test(models.Model):
         bc += [{'title': str(self),
                 'url': reverse('view_test', args=(self.id,))}]
         return bc
+
+    def copy(self, engagement=None):
+        copy = self
+        # Save the necessary ManyToMany relationships
+        old_notes = list(self.notes.all())
+        old_files = list(self.files.all())
+        old_tags = list(self.tags.all())
+        old_findings = list(Finding.objects.filter(test=self))
+        # Wipe the IDs of the new object
+        copy.pk = None
+        copy.id = None
+        if engagement:
+            copy.engagement = engagement
+        # Save the object before setting any ManyToMany relationships
+        copy.save()
+        # Copy the notes
+        for notes in old_notes:
+            copy.notes.add(notes.copy())
+        # Copy the files
+        for files in old_files:
+            copy.files.add(files.copy())
+        # Copy the Findings
+        for finding in old_findings:
+            finding.copy(test=copy)
+        # Assign any tags
+        copy.tags.set(old_tags)
+
+        return copy
 
     # only used by bulk risk acceptance api
     @property
@@ -1828,12 +2040,8 @@ class Finding(models.Model):
     endpoints = models.ManyToManyField(Endpoint,
                                        blank=True,
                                        verbose_name=_('Endpoints'),
-                                       help_text=_("The hosts within the product that are susceptible to this flaw."))
-    endpoint_status = models.ManyToManyField(Endpoint_Status,
-                                             blank=True,
-                                             related_name="finding_endpoint_status",
-                                             verbose_name=_('Endpoint Status'),
-                                             help_text=_('The status of the endpoint associated with this flaw (Vulnerable, Mitigated, ...).'))
+                                       help_text=_("The hosts within the product that are susceptible to this flaw. + The status of the endpoint associated with this flaw (Vulnerable, Mitigated, ...)."),
+                                       through=Endpoint_Status)
     references = models.TextField(null=True,
                                   blank=True,
                                   db_column="refs",
@@ -1849,7 +2057,7 @@ class Finding(models.Model):
                                  help_text=_("Denotes if this flaw is active or not."))
     # note that false positive findings cannot be verified
     # in defectdojo verified means: "we have verified the finding and it turns out that it's not a false positive"
-    verified = models.BooleanField(default=True,
+    verified = models.BooleanField(default=False,
                                    verbose_name=_('Verified'),
                                    help_text=_("Denotes if this flaw has been manually verified by the tester."))
     false_p = models.BooleanField(default=False,
@@ -2062,6 +2270,11 @@ class Finding(models.Model):
                                verbose_name=_('Service'),
                                help_text=_('A service is a self-contained piece of functionality within a Product. This is an optional field which is used in deduplication of findings when set.'))
 
+    planned_remediation_date = models.DateField(null=True,
+                                                editable=True,
+                                                verbose_name=_('Planned Remediation Date'),
+                                                help_text=_("The date the flaw is expected to be remediated."))
+
     tags = TagField(blank=True, force_lowercase=True, help_text=_("Add tags that help describe this finding. Choose from the list or add new tags. Press Enter key to add."))
 
     SEVERITIES = {'Info': 4, 'Low': 3, 'Medium': 2,
@@ -2111,6 +2324,40 @@ class Finding(models.Model):
         self.unsaved_tags = None
         self.unsaved_files = None
         self.unsaved_vulnerability_ids = None
+
+    def copy(self, test=None):
+        copy = self
+        # Save the necessary ManyToMany relationships
+        old_notes = list(self.notes.all())
+        old_files = list(self.files.all())
+        old_status_findings = list(self.status_finding.all())
+        old_reviewers = list(self.reviewers.all())
+        old_found_by = list(self.found_by.all())
+        old_tags = list(self.tags.all())
+        # Wipe the IDs of the new object
+        copy.pk = None
+        copy.id = None
+        if test:
+            copy.test = test
+        # Save the object before setting any ManyToMany relationships
+        copy.save()
+        # Copy the notes
+        for notes in old_notes:
+            copy.notes.add(notes.copy())
+        # Copy the files
+        for files in old_files:
+            copy.files.add(files.copy())
+        # Copy the endpoint_status
+        for endpoint_status in old_status_findings:
+            endpoint_status.copy(finding=copy)  # adding or setting is not necessary, link is created by Endpoint_Status.copy()
+        # Assign any reviewers
+        copy.reviewers.set(old_reviewers)
+        # Assign any found_by
+        copy.found_by.set(old_found_by)
+        # Assign any tags
+        copy.tags.set(old_tags)
+
+        return copy
 
     def get_absolute_url(self):
         from django.urls import reverse
@@ -2224,7 +2471,7 @@ class Finding(models.Model):
     # (This sometimes reports "None")
     def get_endpoints(self):
         endpoint_str = ''
-        if(self.id is None):
+        if (self.id is None):
             if len(self.unsaved_endpoints) > 0:
                 deduplicationLogger.debug("get_endpoints before the finding was saved")
                 # convert list of unsaved endpoints to the list of their canonical representation
@@ -2358,11 +2605,12 @@ class Finding(models.Model):
         return ", ".join([str(s) for s in status])
 
     def _age(self, start_date):
+        from dojo.utils import get_work_days
         if SLA_BUSINESS_DAYS:
             if self.mitigated:
-                days = busday_count(self.date, self.mitigated.date())
+                days = get_work_days(self.date, self.mitigated.date())
             else:
-                days = busday_count(self.date, get_current_date())
+                days = get_work_days(self.date, get_current_date())
         else:
             if self.mitigated:
                 diff = self.mitigated.date() - start_date
@@ -2374,6 +2622,10 @@ class Finding(models.Model):
     @property
     def age(self):
         return self._age(self.date)
+
+    def get_sla_periods(self):
+        sla_configuration = SLA_Configuration.objects.filter(id=self.test.engagement.product.sla_configuration_id).first()
+        return sla_configuration
 
     def get_sla_start_date(self):
         if self.sla_start_date:
@@ -2387,9 +2639,8 @@ class Finding(models.Model):
 
     def sla_days_remaining(self):
         sla_calculation = None
-        severity = self.severity
-        from dojo.utils import get_system_setting
-        sla_age = get_system_setting('sla_' + self.severity.lower())
+        sla_periods = self.get_sla_periods()
+        sla_age = getattr(sla_periods, self.severity.lower(), None)
         if sla_age:
             sla_calculation = sla_age - self.sla_age
         return sla_calculation
@@ -2397,7 +2648,7 @@ class Finding(models.Model):
     def sla_deadline(self):
         days_remaining = self.sla_days_remaining()
         if days_remaining:
-            return self.date + relativedelta(days=days_remaining)
+            return get_current_date() + relativedelta(days=days_remaining)
         return None
 
     def github(self):
@@ -2486,10 +2737,6 @@ class Finding(models.Model):
                 self.cvssv3_score = cvss_object.scores()[2]
             except Exception as ex:
                 logger.error("Can't compute cvssv3 score for finding id %i. Invalid cvssv3 vector found: '%s'. Exception: %s", self.id, self.cvssv3, ex)
-
-        if rules_option:
-            from dojo.utils import do_apply_rules
-            do_apply_rules(self, *args, **kwargs)
 
         # Finding.save is called once from serializers.py with dedupe_option=False because the finding is not ready yet, for example the endpoints are not built
         # It is then called a second time with dedupe_option defaulted to true; now we can compute the hash_code and run the deduplication
@@ -2602,10 +2849,30 @@ class Finding(models.Model):
             return None
         if self.test.engagement.source_code_management_uri is None:
             return escape(self.file_path)
-        link = self.test.engagement.source_code_management_uri + '/' + self.file_path
+        link = self.get_file_path_with_raw_link()
+        return create_bleached_link(link, self.file_path)
+
+    def get_file_path_with_raw_link(self):
+        if self.file_path is None:
+            return None
+        link = self.test.engagement.source_code_management_uri
+        if (self.test.engagement.source_code_management_uri is not None
+                and "https://github.com/" in self.test.engagement.source_code_management_uri):
+            if self.test.commit_hash:
+                link += '/blob/' + self.test.commit_hash + '/' + self.file_path
+            elif self.test.engagement.commit_hash:
+                link += '/blob/' + self.test.engagement.commit_hash + '/' + self.file_path
+            elif self.test.branch_tag:
+                link += '/blob/' + self.test.branch_tag + '/' + self.file_path
+            elif self.test.engagement.branch_tag:
+                link += '/blob/' + self.test.engagement.branch_tag + '/' + self.file_path
+            else:
+                link += '/' + self.file_path
+        else:
+            link += '/' + self.file_path
         if self.line:
             link = link + '#L' + str(self.line)
-        return create_bleached_link(link, self.file_path)
+        return link
 
     def get_references_with_links(self):
         import re
@@ -2653,12 +2920,7 @@ class FindingAdmin(admin.ModelAdmin):
     # IDs rather than multi-select
     raw_id_fields = (
         'endpoints',
-        'endpoint_status',
     )
-
-
-Finding.endpoints.through.__str__ = lambda \
-    x: "Endpoint: " + str(x.endpoint)
 
 
 class Vulnerability_Id(models.Model):
@@ -2696,7 +2958,10 @@ class Stub_Finding(models.Model):
 
 class Finding_Group(TimeStampedModel):
 
-    GROUP_BY_OPTIONS = [('component_name', 'Component Name'), ('component_name+component_version', 'Component Name + Version'), ('file_path', 'File path')]
+    GROUP_BY_OPTIONS = [('component_name', 'Component Name'),
+                        ('component_name+component_version', 'Component Name + Version'),
+                        ('file_path', 'File path'),
+                        ('finding_title', 'Finding Title')]
 
     name = models.CharField(max_length=255, blank=False, null=False)
     test = models.ForeignKey(Test, on_delete=models.CASCADE)
@@ -2928,7 +3193,15 @@ class Risk_Acceptance(models.Model):
         (TREATMENT_TRANSFER, 'Transfer (The risk is transferred to a 3rd party)'),
     ]
 
-    name = models.CharField(max_length=100, null=False, blank=False, help_text=_("Descriptive name which in the future may also be used to group risk acceptances together across engagements and products"))
+    TREATMENT_TRANSLATIONS = {
+        'A': 'Accept (The risk is acknowledged, yet remains)',
+        'V': 'Avoid (Do not engage with whatever creates the risk)',
+        'M': 'Mitigate (The risk still exists, yet compensating controls make it less of a threat)',
+        'F': 'Fix (The risk is eradicated)',
+        'T': 'Transfer (The risk is transferred to a 3rd party)',
+    }
+
+    name = models.CharField(max_length=300, null=False, blank=False, help_text=_("Descriptive name which in the future may also be used to group risk acceptances together across engagements and products"))
 
     accepted_findings = models.ManyToManyField(Finding)
 
@@ -2990,6 +3263,25 @@ class Risk_Acceptance(models.Model):
 
         return None
 
+    def copy(self, engagement=None):
+        copy = self
+        # Save the necessary ManyToMany relationships
+        old_notes = list(self.notes.all())
+        old_accepted_findings_hash_codes = [finding.hash_code for finding in self.accepted_findings.all()]
+        # Wipe the IDs of the new object
+        copy.pk = None
+        copy.id = None
+        # Save the object before setting any ManyToMany relationships
+        copy.save()
+        # Copy the notes
+        for notes in old_notes:
+            copy.notes.add(notes.copy())
+        # Assign any accepted findings
+        if engagement:
+            new_accepted_findings = Finding.objects.filter(test__engagement=engagement, hash_code__in=old_accepted_findings_hash_codes, risk_accepted=True).distinct()
+            copy.accepted_findings.set(new_accepted_findings)
+        return copy
+
 
 class FileAccessToken(models.Model):
     """This will allow reports to request the images without exposing the
@@ -3011,6 +3303,28 @@ class FileAccessToken(models.Model):
         if not self.token:
             self.token = uuid4()
         return super(FileAccessToken, self).save(*args, **kwargs)
+
+
+ANNOUNCEMENT_STYLE_CHOICES = (
+    ('info', 'Info'),
+    ('success', 'Success'),
+    ('warning', 'Warning'),
+    ('danger', 'Danger')
+)
+
+
+class Announcement(models.Model):
+    message = models.CharField(max_length=500,
+                                help_text=_("This dismissable message will be displayed on all pages for authenticated users. It can contain basic html tags, for example <a href='https://www.fred.com' style='color: #337ab7;' target='_blank'>https://example.com</a>"),
+                                default='')
+    dismissable = models.BooleanField(default=False, null=True, blank=True)
+    style = models.CharField(max_length=64, choices=ANNOUNCEMENT_STYLE_CHOICES, default='info',
+                            help_text=_("The style of banner to display. (info, success, warning, danger)"))
+
+
+class UserAnnouncement(models.Model):
+    announcement = models.ForeignKey(Announcement, null=True, editable=False, on_delete=models.CASCADE, related_name='user_announcement')
+    user = models.ForeignKey(Dojo_User, null=True, editable=False, on_delete=models.CASCADE)
 
 
 class BannerConf(models.Model):
@@ -3076,7 +3390,7 @@ class JIRA_Instance(models.Model):
                                         ('Bug', 'Bug'),
                                         ('Security', 'Security')
                                     )
-    default_issue_type = models.CharField(max_length=15,
+    default_issue_type = models.CharField(max_length=255,
                                           choices=default_issue_type_choices,
                                           default='Bug',
                                           help_text=_('You can define extra issue types in settings.py'))
@@ -3096,6 +3410,7 @@ class JIRA_Instance(models.Model):
     accepted_mapping_resolution = models.CharField(null=True, blank=True, max_length=300, help_text=_('JIRA resolution names (comma-separated values) that maps to an Accepted Finding'))
     false_positive_mapping_resolution = models.CharField(null=True, blank=True, max_length=300, help_text=_('JIRA resolution names (comma-separated values) that maps to a False Positive Finding'))
     global_jira_sla_notification = models.BooleanField(default=True, blank=False, verbose_name=_("Globally send SLA notifications as comment?"), help_text=_("This setting can be overidden at the Product level"))
+    finding_jira_sync = models.BooleanField(default=False, blank=False, verbose_name=_("Automatically sync Findings with JIRA?"), help_text=_("If enabled, this will sync changes to a Finding automatically to JIRA"))
 
     @property
     def accepted_resolutions(self):
@@ -3160,6 +3475,15 @@ class JIRA_Project(models.Model):
                                       help_text=_("Choose the folder containing the Django templates used to render the JIRA issue description. These are stored in dojo/templates/issue-trackers. Leave empty to use the default jira_full templates."))
     engagement = models.OneToOneField(Engagement, on_delete=models.CASCADE, null=True, blank=True)
     component = models.CharField(max_length=200, blank=True)
+    custom_fields = models.JSONField(max_length=200, blank=True, null=True,
+                                   help_text=_("JIRA custom field JSON mapping of Id to value, e.g. {\"customfield_10122\": [{\"name\": \"8.0.1\"}]}"))
+    default_assignee = models.CharField(max_length=200, blank=True, null=True,
+                                     help_text=_("JIRA default assignee (name). If left blank then it defaults to whatever is configured in JIRA."))
+    jira_labels = models.CharField(max_length=200, blank=True, null=True,
+                                   help_text=_('JIRA issue labels space seperated'))
+    add_vulnerability_id_to_jira_label = models.BooleanField(default=False,
+                                                             verbose_name=_('Add vulnerability Id as a JIRA label'),
+                                                             blank=False)
     push_all_issues = models.BooleanField(default=False, blank=True,
          help_text=_("Automatically maintain parity with JIRA. Always create and update JIRA tickets for findings in this Product."))
     enable_engagement_epic_mapping = models.BooleanField(default=False,
@@ -3227,7 +3551,7 @@ class JIRA_Issue(models.Model):
         elif type(obj) == Engagement:
             self.engagement = obj
         else:
-            raise ValueError('unknown objec type whiel creating JIRA_Issue: %s', to_str_typed(obj))
+            raise ValueError('unknown object type while creating JIRA_Issue: %s' % to_str_typed(obj))
 
     def __str__(self):
         text = ""
@@ -3600,77 +3924,6 @@ class Benchmark_Product_Summary(models.Model):
         unique_together = [('product', 'benchmark_type')]
 
 
-# product_opts = [f.name for f in Product._meta.fields]
-# test_opts = [f.name for f in Test._meta.fields]
-# test_type_opts = [f.name for f in Test_Type._meta.fields]
-finding_opts = [f.name for f in Finding._meta.fields if f.name not in ['last_status_update']]
-# endpoint_opts = [f.name for f in Endpoint._meta.fields]
-# engagement_opts = [f.name for f in Engagement._meta.fields]
-# product_type_opts = [f.name for f in Product_Type._meta.fields]
-# single_options = product_opts + test_opts + test_type_opts + finding_opts + \
-#                  endpoint_opts + engagement_opts + product_type_opts
-all_options = []
-for x in finding_opts:
-    all_options.append((x, x))
-operator_options = (('Matches', 'Matches'),
-                    ('Contains', 'Contains'))
-application_options = (('Append', 'Append'),
-                      ('Replace', 'Replace'))
-blank_options = (('', ''),)
-
-
-class Rule(models.Model):
-    # add UI notification to let people know what rules were applied
-
-    name = models.CharField(max_length=200)
-    enabled = models.BooleanField(default=True)
-    text = models.TextField()
-    operator = models.CharField(max_length=30, choices=operator_options)
-    """
-    model_object_options = (('Product', 'Product'),
-                            ('Engagement', 'Engagement'), ('Test', 'Test'),
-                            ('Finding', 'Finding'), ('Endpoint', 'Endpoint'),
-                            ('Product Type', 'Product_Type'), ('Test Type', 'Test_Type'))
-    """
-    model_object_options = (('Finding', 'Finding'),)
-    model_object = models.CharField(max_length=30, choices=model_object_options)
-    match_field = models.CharField(max_length=200, choices=all_options)
-    match_text = models.TextField()
-    application = models.CharField(max_length=200, choices=application_options)
-    applies_to = models.CharField(max_length=30, choices=model_object_options)
-    # TODO: Add or ?
-    # and_rules = models.ManyToManyField('self')
-    applied_field = models.CharField(max_length=200, choices=(all_options))
-    child_rules = models.ManyToManyField('self', editable=False)
-    parent_rule = models.ForeignKey('self', editable=False, null=True, on_delete=models.CASCADE)
-
-
-class Child_Rule(models.Model):
-    # add UI notification to let people know what rules were applied
-    operator = models.CharField(max_length=30, choices=operator_options)
-    """
-    model_object_options = (('Product', 'Product'),
-                            ('Engagement', 'Engagement'), ('Test', 'Test'),
-                            ('Finding', 'Finding'), ('Endpoint', 'Endpoint'),
-                            ('Product Type', 'Product_Type'), ('Test Type', 'Test_Type'))
-    """
-    model_object_options = (('Finding', 'Finding'),)
-    model_object = models.CharField(max_length=30, choices=model_object_options)
-    match_field = models.CharField(max_length=200, choices=all_options)
-    match_text = models.TextField()
-    # TODO: Add or ?
-    # and_rules = models.ManyToManyField('self')
-    parent_rule = models.ForeignKey(Rule, editable=False, null=True, on_delete=models.CASCADE)
-
-
-class FieldRule(models.Model):
-    field = models.CharField(max_length=200)
-    update_options = (('Append', 'Append'),
-                        ('Replace', 'Replace'))
-    update_type = models.CharField(max_length=30, choices=update_options)
-    text = models.CharField(max_length=200)
-
-
 # ==========================
 # Defect Dojo Engaegment Surveys
 # ==============================
@@ -3919,6 +4172,7 @@ admin.site.register(Tool_Type)
 admin.site.register(Cred_User)
 admin.site.register(Cred_Mapping)
 admin.site.register(System_Settings, System_SettingsAdmin)
+admin.site.register(SLA_Configuration)
 admin.site.register(CWE)
 admin.site.register(Regulation)
 admin.site.register(Global_Role)
