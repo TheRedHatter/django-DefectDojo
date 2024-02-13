@@ -20,8 +20,7 @@ DockerHub to update.
 {{% /alert %}}
 
 
-The generic upgrade method for docker-compose follows these steps:
-
+The generic upgrade method for docker-compose are as follows:
 -   Pull the latest version
 
     ``` {.sourceCode .bash}
@@ -29,37 +28,237 @@ The generic upgrade method for docker-compose follows these steps:
     docker pull defectdojo/defectdojo-nginx:latest
     ```
 
--   If you would like to use something older (so not the latest
-    version), specify the version (tag) you want to upgrade to:
+-   If you would like to use a version other than the latest, specify the version (tag) you want to upgrade to:
 
     ``` {.sourceCode .bash}
     docker pull defectdojo/defectdojo-django:1.10.2
     docker pull defectdojo/defectdojo-nginx:1.10.2
     ```
 
+-   If you would like to use alpine based images, you specify the version (tag) you want to upgrade to:
+
+    ``` {.sourceCode .bash}
+    docker pull defectdojo/defectdojo-django:1.10.2-alpine
+    docker pull defectdojo/defectdojo-nginx:1.10.2-alpine
+    ```
+
 -   Go to the directory where your docker-compose.yml file lives
--   Stop DefectDojo: `docker-compose stop`
+-   Stop DefectDojo: `./dc-stop.sh`
 -   Re-start DefectDojo, allowing for container recreation:
-    `docker-compose up -d`
+    `./dc-up-d.sh`
 -   Database migrations will be run automatically by the initializer.
     Check the output via `docker-compose logs initializer` or relevant k8s command
 -   If you have the initializer disabled (or if you want to be on the
     safe side), run the migration command:
-    `docker-compose exec uwsgi /bin/bash -c 'python manage.py migrate`
+    `docker-compose exec uwsgi /bin/bash -c "python manage.py migrate"`
 
 ### Building your local images
 
 If you build your images locally and do not use the ones from DockerHub,
-the instructions are much the same, except that you'd build your images
-first. (Of course, if you're doing this, then you know you have to
-update the source code first)
+the instructions are the same, with the caveat that you must build your images
+first. 
+-   Pull the latest DefectDojo changes
 
-Replace the first step above with this one: `docker-compose build`
+    ``` {.sourceCode .bash}
+    git fetch
+    git pull
+    git merge origin/master
+    ```    
+
+Then replace the first step of the above generic upgrade method for docker-compose with: `docker-compose build`
 
 godojo installations
 --------------------
 
 If you have installed DefectDojo on "iron" and wish to upgrade the installation, please see the [instructions in the repo](https://github.com/DefectDojo/godojo/blob/master/docs-and-scripts/upgrading.md).
+
+## Upgrading to DefectDojo Version 2.26.x.
+
+There are no special instruction for upgrading to 2.26.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.26.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.25.x.
+
+There are no special instruction for upgrading to 2.25.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.25.0) for the contents of the release.
+
+A few query parameters related to filtering object via API related to a products tags have been renamed to be more consistent with the other "related object tags":
+
+**Breaking Change**
+
+ - Engagement
+   - `product__tags__name` -> `product__tags` 
+   - `not_product__tags__name` -> `not_product__tags` 
+ - Test
+   - `engagement__product__tags__name` -> `engagement__product__tags`
+   - `not_engagement__product__tags__name` -> `not_engagement__product__tags`
+ - Finding
+   - `test__engagement__product__tags__name` -> `test__engagement__product__tags`
+   - `not_test__engagement__product__tags__name` -> `not_test__engagement__product__tags`
+
+**Deprecation**
+
+The OpenAPI 2.0 Swagger API documentation is being deprecated in favor of the existing
+OpenAPI 3.0 API documentation page. The OpenAPI 2.0 Swagger API documentation page is
+slated for removal in version 2.30.0
+
+*Note*: The API has not changed in any way and behaves the same between OAPI2 and OAPI3
+
+For all other changes, check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.25.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.24.x.
+
+There are no special instruction for upgrading to 2.24.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.24.0) for the contents of the release.
+
+
+## Upgrading to DefectDojo Version 2.23.x.
+
+There is a migration from the legacy Nessus and Nessus WAS parsers to a single Tenable parser. The updated Tenable parser simply merges existing support for Nessus and Nessus WAS without introducing new functionality that could create instability
+
+There is a migration process built into the upgrade that will automatically convert exiting Nessus and Nessus WAS findings and tests into Tenable findings and tests
+
+**Breaking Change**
+
+ - If there is any use of the Nessus or Nessus WAS in automated fashion via the import and reimport API endpoints, the `scan-type` parameter needs to be updated to `Tenable Scan`
+ - The default containerized database will now be [PostgreSQL](https://www.postgresql.org/) rather than [MySQL](https://dev.mysql.com/) due to the use of case insensitivity on fields by default
+   - It is recommended to update the [database character set and collation](https://dev.mysql.com/doc/refman/5.7/en/charset-database.html) to use UTF encoding 
+   - If your deployment uses the MySQL containerized database, please see the following updates to run DefectDojo:
+     - Use of the helper script "dc-up": `./dc-up.sh mysql-rabbitmq` or `./dc-up.sh mysql-redis`
+     - Use of the helper script "dc-up-d": `./dc-up-d.sh mysql-rabbitmq` or `./dc-up-d.sh mysql-redis`
+     - Use of Docker Compose directly: `docker-compose --profile mysql-rabbitmq --env-file ./docker/environments/mysql-rabbitmq.env up` or `docker-compose --profile mysql-redis --env-file ./docker/environments/mysql-redis.env up`
+
+For all other changes, check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.23.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.22.x.
+
+There are no special instruction for upgrading to 2.22.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.22.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.21.x.
+
+There are no special instruction for upgrading to 2.21.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.21.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.20.x.
+
+There are no special instruction for upgrading to 2.20.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.20.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.19.x
+
+There are new docker images based on alpine with fewer third party dependencies. Related to the new images the current docker files had to be renamed and have a "-debian" or the new images a "-alpine" at the end. Furthermore there are new docker tags [DefectdojoVersion]-[OS]. For example 2.19.0-alpine or 2.19.0-debian. The currend tags (latest and [DefectdojoVersion]) are still based on the "old" images. Be aware that the new alpine images are not heavily tested and may contain bugs.
+
+**Breaking Change**
+
+In version 2.19.3, the GitHub OAuth integration has been removed to prevent configurations that may allow more access than intended.
+
+[DefectDojo Security Advisory: Severity Medium | Potential GitHub Authentication Misconfiguration](https://github.com/DefectDojo/django-DefectDojo/security/advisories/GHSA-hfp4-q5pg-2p7r)
+
+## Upgrading to DefectDojo Version 2.18.x
+
+**Upgrade instructions for helm chart with rabbitMQ enabled**: The rabbitMQ uses a statefulset by default. Before upgrading the helm chart we have to ensure that all queues are empty:
+
+```bash
+kubectl exec -i <name_of_the_rabbitmq_pod>  -- rabbitmqctl list_queues
+```
+
+Next step is to delete rabbitMQ pvc:
+
+```bash
+kubectl delete  pvc -l app.kubernetes.io/name=rabbitmq
+```
+
+Last step is to perform the upgrade.
+
+For more information: https://artifacthub.io/packages/helm/bitnami/rabbitmq/11.2.0
+
+
+
+## Upgrading to DefectDojo Version 2.17.x.
+
+There are no special instruction for upgrading to 2.17.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.17.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.16.x.
+
+There are no special instruction for upgrading to 2.16.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.16.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.15.x.
+
+There are no special instruction for upgrading to 2.15.0. Check the [Release Notes](https://github.com/DefectDojo/django-DefectDojo/releases/tag/2.15.0) for the contents of the release.
+
+## Upgrading to DefectDojo Version 2.13.x.
+
+The last release implemented the search for vulnerability ids, but the search database was not initialized. To populate the database table of the vulnerability ids, execute this django command from the defect dojo installation directory or from a shell of the Docker container or Kubernetes pod:
+
+`./manage.py migrate_cve`
+
+Additionally this requires a one-time rebuild of the Django-Watson search index. Execute this django command from the defect dojo installation directory or from a shell of the Docker container or Kubernetes pod:
+
+`./manage.py buildwatson`
+
+**Upgrade instructions for helm chart with postgres enabled**: The postgres database uses a statefulset by default. Before upgrading the helm chart we have to delete the statefullset and ensure that the pvc is reused, to keep the data. For more information: https://docs.bitnami.com/kubernetes/infrastructure/postgresql/administration/upgrade/ .
+
+```bash
+helm repo update
+helm dependency update ./helm/defectdojo
+
+# obtain name oft the postgres pvc
+export POSTGRESQL_PVC=$(kubectl get pvc -l app.kubernetes.io/instance=defectdojo,role=primary -o jsonpath="{.items[0].metadata.name}")
+
+# delete postgres statefulset
+kubectl delete statefulsets.apps defectdojo-postgresql --namespace default --cascade=orphan
+
+# upgrade
+helm upgrade \
+  defectdojo \
+  ./helm/defectdojo/ \
+  --set primary.persistence.existingClaim=$POSTGRESQL_PVC \
+  ... # add your custom settings
+```
+
+**Further changes:**
+
+Legacy authorization for changing configurations based on staff users has been removed.
+
+## Upgrading to DefectDojo Version 2.12.x.
+
+**Breaking change for search:** The field `cve` has been removed from the search index for Findings and the Vulnerability Ids have been added to the search index. With this the syntax to search explicitly for vulnerability ids have been changed from `cve:` to `vulnerability_id:`, e.g. `vulnerability_id:CVE-2020-27619`.
+
+
+## Upgrading to DefectDojo Version 2.10.x.
+
+**Breaking change for Findings:** The field `cve` will be replaced by a list of Vulnerability Ids, which can store references to security advisories associated with this finding. These can be Common Vulnerabilities and Exposures (CVE) or from other sources, eg. GitHub Security Advisories. Although the field does still exist in the code, the API and the UI have already been changed to use the list of Vulnerability Ids. Other areas like hash code calculation, search and parsers will be migrated step by step in later stages.
+
+This change also causes an API change for the endpoint `/engagements/{id}/accept_risks/`.
+
+
+## Upgrading to DefectDojo Version 2.9.x.
+
+**Breaking change for APIv2:** `configuration_url` was removed from API endpoint `/api/v2/tool_configurations/` due to redundancy.
+
+
+## Upgrading to DefectDojo Version 2.8.x.
+
+**Breaking change for Docker Compose:** Starting DefectDojo with Docker Compose now supports 2 databases (MySQL and PostgreSQL) and 2 celery brokers (RabbitMQ and Redis). To make this possible, docker-compose needs to be started with the parameters `--profile` and `--env-file`. You can get more information in [Setup via Docker Compose - Profiles](https://github.com/DefectDojo/django-DefectDojo/blob/master/readme-docs/DOCKER.md#setup-via-docker-compose---profiles). The profile `mysql-rabbitmq` provides the same configuration as in previous releases. With this the prerequisites have changed as well: Docker requires at least version 19.03.0 and Docker Compose 1.28.0.
+
+**Breaking change for Helm Chart:** In one of the last releases we upgraded the redis dependency in our helm chart without renaming keys in our helm chart. We fixed this bug with this release, but you may want to check if all redis values are correct ([Pull Request](https://github.com/DefectDojo/django-DefectDojo/pull/5886)).
+
+The flexible permissions for the configuration of DefectDojo are now active by default. With this, the flag **Staff** for users is not relevant and not visible anymore. The old behaviour can still be activated by setting the parameter `FEATURE_CONFIGURATION_AUTHORIZATION` to `False`. If you haven't done so with the previous release, you can still run a migration script with `./manage.py migrate_staff_users`. This script:
+
+* creates a group for all staff users,
+* sets all configuration permissions that staff users had and
+* sets the global Owner role, if `AUTHORIZATION_STAFF_OVERRIDE` is set to `True`.
+
+## Upgrading to DefectDojo Version 2.7.x.
+
+This release is a breaking change regarding the Choctaw Hog parser. As the maintainers of this project unified multiple parsers under the RustyHog parser, we now support the parsing of Choctaw Hog JSON output files through the Rusty Hog parser. Furthermore, we also support Gottingen Hog and Essex Hog JSON output files with the RustyHog parser.
+
+There is another breaking change regarding the import of SSLyze scans. The parser has been renamed from `SSLyze 3 Scan (JSON)` to `SSLyze Scan (JSON)`. The data in the database is fixed by the initializer, but it may break scripted API calls.
+
+Release 2.7.0 contains a beta functionality to make permissions for the configuration of DefectDojo more flexible. When the settings parameter `FEATURE_CONFIGURATION_AUTHORIZATION` is set to `True`, many configuration dialogues and API endpoints can be enabled for users or groups of users, regardless of their **Superuser** or **Staff** status, see [Configuration Permissions]({{< ref "../usage/permissions/#configuration-permissions" >}}).
+
+The functionality using the flag `AUTHORIZATION_STAFF_OVERRIDE` has been removed. The same result can be achieved with giving the staff users a global Owner role. 
+
+To support the transition for these 2 changes, you can run a migration script with ``./manage.py migrate_staff_users``. This script:
+
+* creates a group for all staff users,
+* sets all configuration permissions that staff users had and
+* sets the global Owner role, if `AUTHORIZATION_STAFF_OVERRIDE` is set to `True`.
 
 ## Upgrading to DefectDojo Version 2.6.x.
 
@@ -67,11 +266,10 @@ There are no special instruction for upgrading to 2.6.0. Check the [Release Note
 
 Please consult the security advisories [GHSA-f82x-m585-gj24](https://github.com/DefectDojo/django-DefectDojo/security/advisories/GHSA-f82x-m585-gj24) (moderate) and [GHSA-v7fv-g69g-x7p2](https://github.com/DefectDojo/django-DefectDojo/security/advisories/GHSA-v7fv-g69g-x7p2) (high) to see what security issues were fixed in this release. These will be published and become visible at January 18th, 2022.
 
-
 ## Upgrading to DefectDojo Version 2.5.x.
 
 Legacy authorization has been completely removed with version 2.5.0. This includes removal of the migration of users
-to the new authorization as described in https://defectdojo.github.io/django-DefectDojo/getting_started/upgrading/#authorization.
+to the new authorization as described in https://documentation.defectdojo.com/getting_started/upgrading/#authorization.
 If you are still using the legacy authorization, you should run the migration with ``./manage.py migrate_authorization_v2``
 before upgrading to version 2.5.0
 
@@ -123,7 +321,7 @@ of the same endpoints. The mentioned bug was fixed in 2.2.0 and if you have seen
 Follow the usual steps to upgrade as described above.
 
 BEFORE UPGRADING
-- If you are using SAML2 checkout the new [documentaion](https://defectdojo.github.io/django-DefectDojo/integrations/social-authentication/#saml-20) and update you settings following the migration section. We replaced [django-saml2-auth](https://github.com/fangli/django-saml2-auth) with [djangosaml2](https://github.com/IdentityPython/djangosaml2).
+- If you are using SAML2 checkout the new [documentaion](https://documentation.defectdojo.com/integrations/social-authentication/#saml-20) and update you settings following the migration section. We replaced [django-saml2-auth](https://github.com/fangli/django-saml2-auth) with [djangosaml2](https://github.com/IdentityPython/djangosaml2).
 
 AFTER UPGRADING
 - Usual migration process (`python manage.py migrate`) try to migrate all endpoints to new format and merge duplicates.

@@ -306,6 +306,8 @@ def save_endpoints_to_add(endpoint_list, product):
 
 def endpoint_meta_import(file, product, create_endpoints, create_tags, create_meta, origin='UI', request=None):
     content = file.read()
+    sig = content.decode('utf-8-sig')
+    content = sig.encode("utf-8")
     if type(content) is bytes:
         content = content.decode('utf-8')
     reader = csv.DictReader(io.StringIO(content))
@@ -321,7 +323,7 @@ def endpoint_meta_import(file, product, create_endpoints, create_tags, create_me
             return HttpResponseRedirect(reverse('import_endpoint_meta', args=(product.id, )))
         elif origin == 'API':
             from rest_framework.serializers import ValidationError
-            raise ValidationError('The column "hostname" must be present to map host to Endpoint.',)
+            raise ValidationError('The column "hostname" must be present to map host to Endpoint.')
 
     keys = [key for key in reader.fieldnames if key != 'hostname']
 
@@ -342,22 +344,37 @@ def endpoint_meta_import(file, product, create_endpoints, create_tags, create_me
         for endpoint in endpoints:
             existing_tags = [tag.name for tag in endpoint.tags.all()]
             for item in meta:
-                if create_meta:
-                    # check if meta exists first. Don't want to make duplicate endpoints
-                    dojo_meta, create = DojoMeta.objects.get_or_create(
-                        endpoint=endpoint,
-                        name=item[0])
-                    dojo_meta.value = item[1]
-                    dojo_meta.save()
-                if create_tags:
-                    for tag in existing_tags:
-                        if item[0] not in tag:
-                            continue
-                        else:
-                            # found existing. Update it
-                            existing_tags.remove(tag)
-                            break
-                    existing_tags += [item[0] + ':' + item[1]]
-                # if tags are not supposed to be added, this value remain unchanged
-                endpoint.tags = existing_tags
+                # Determine if there is a value here
+                if item[1] is not None and len(item[1]) > 0:
+                    if create_meta:
+                        # check if meta exists first. Don't want to make duplicate endpoints
+                        dojo_meta, create = DojoMeta.objects.get_or_create(
+                            endpoint=endpoint,
+                            name=item[0])
+                        dojo_meta.value = item[1]
+                        dojo_meta.save()
+                    if create_tags:
+                        for tag in existing_tags:
+                            if item[0] not in tag:
+                                continue
+                            else:
+                                # found existing. Update it
+                                existing_tags.remove(tag)
+                                break
+                        existing_tags += [item[0] + ':' + item[1]]
+                    # if tags are not supposed to be added, this value remain unchanged
+                    endpoint.tags = existing_tags
             endpoint.save()
+
+
+def remove_broken_endpoint_statuses(apps):
+    Finding = apps.get_model('dojo', 'Finding')
+    Endpoint = apps.get_model('dojo', 'Endpoint')
+    Endpoint_Status = apps.get_model('dojo', 'endpoint_status')
+    broken_eps = Endpoint_Status.objects.filter(Q(endpoint=None) | Q(finding=None))
+    if broken_eps.count() == 0:
+        logger.info('There is no broken endpoint_status')
+    else:
+        logger.warning('We identified %s broken endpoint_statuses', broken_eps.count())
+        deleted = broken_eps.delete()
+        logger.warning('We removed: %s', deleted)

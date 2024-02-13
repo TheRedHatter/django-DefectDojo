@@ -10,10 +10,10 @@ from datetime import datetime
 
 from dateutil.relativedelta import relativedelta
 from django.conf import settings
-from django.core.exceptions import PermissionDenied
-from django.http import Http404, HttpResponseForbidden, HttpResponse, QueryDict
+from django.http import Http404, HttpResponse, QueryDict
 from django.shortcuts import render, get_object_or_404
 from django.utils import timezone
+from django.core.exceptions import PermissionDenied
 
 from dojo.filters import ReportFindingFilter, EndpointReportFilter, \
     EndpointFilter
@@ -28,7 +28,7 @@ from dojo.authorization.authorization_decorators import user_is_authorized
 from dojo.authorization.roles_permissions import Permissions
 from dojo.authorization.authorization import user_has_permission_or_403
 from dojo.finding.queries import get_authorized_findings
-from dojo.finding.views import get_filtered_findings
+from dojo.finding.views import BaseListFindings
 
 logger = logging.getLogger(__name__)
 
@@ -115,9 +115,9 @@ def custom_report(request):
                            "finding_images": finding_images,
                            "user_id": request.user.id})
         else:
-            return HttpResponseForbidden()
+            raise PermissionDenied()
     else:
-        return HttpResponseForbidden()
+        raise PermissionDenied()
 
 
 def report_findings(request):
@@ -335,7 +335,7 @@ def product_endpoint_report(request, pid):
         else:
             raise Http404()
 
-    product_tab = Product_Tab(product.id, "Product Endpoint Report", tab="endpoints")
+    product_tab = Product_Tab(product, "Product Endpoint Report", tab="endpoints")
     return render(request,
                   'dojo/request_endpoint_report.html',
                   {"endpoints": paged_endpoints,
@@ -373,12 +373,14 @@ def generate_report(request, obj, host_view=False):
         user_has_permission_or_403(request.user, obj, Permissions.Test_View)
     elif type(obj).__name__ == "Endpoint":
         user_has_permission_or_403(request.user, obj, Permissions.Endpoint_View)
-    elif type(obj).__name__ == "QuerySet" or type(obj).__name__ == "CastTaggedQuerySet":
+    elif type(obj).__name__ == "QuerySet" or type(obj).__name__ == "CastTaggedQuerySet" or type(obj).__name__ == "TagulousCastTaggedQuerySet":
         # authorization taken care of by only selecting findings from product user is authed to see
         pass
     else:
-        if not request.user.is_staff:
-            raise PermissionDenied
+        if obj is None:
+            raise Exception('No object is given to generate report for')
+        else:
+            raise Exception(f'Report cannot be generated for object of type {type(obj).__name__}')
 
     report_format = request.GET.get('report_type', 'AsciiDoc')
     include_finding_notes = int(request.GET.get('include_finding_notes', 0))
@@ -563,9 +565,8 @@ def generate_report(request, obj, host_view=False):
                    'title': report_title,
                    'host': report_url_resolver(request),
                    'user_id': request.user.id}
-    elif type(obj).__name__ == "QuerySet" or type(obj).__name__ == "CastTaggedQuerySet":
-        findings = ReportFindingFilter(request.GET,
-                                             queryset=prefetch_related_findings_for_report(obj).distinct())
+    elif type(obj).__name__ in ["QuerySet", "CastTaggedQuerySet", "TagulousCastTaggedQuerySet"]:
+        findings = ReportFindingFilter(request.GET, queryset=prefetch_related_findings_for_report(obj).distinct())
         report_name = 'Finding'
         report_type = 'Finding'
         template = 'dojo/finding_pdf_report.html'
@@ -647,18 +648,18 @@ def generate_report(request, obj, host_view=False):
 
     product_tab = None
     if engagement:
-        product_tab = Product_Tab(engagement.product.id, title="Engagement Report", tab="engagements")
+        product_tab = Product_Tab(engagement.product, title="Engagement Report", tab="engagements")
         product_tab.setEngagement(engagement)
     elif test:
-        product_tab = Product_Tab(test.engagement.product.id, title="Test Report", tab="engagements")
+        product_tab = Product_Tab(test.engagement.product, title="Test Report", tab="engagements")
         product_tab.setEngagement(test.engagement)
     elif product:
-        product_tab = Product_Tab(product.id, title="Product Report", tab="findings")
+        product_tab = Product_Tab(product, title="Product Report", tab="findings")
     elif endpoints:
         if host_view:
-            product_tab = Product_Tab(endpoint.product.id, title="Endpoint Host Report", tab="endpoints")
+            product_tab = Product_Tab(endpoint.product, title="Endpoint Host Report", tab="endpoints")
         else:
-            product_tab = Product_Tab(endpoint.product.id, title="Endpoint Report", tab="endpoints")
+            product_tab = Product_Tab(endpoint.product, title="Endpoint Report", tab="endpoints")
 
     return render(request, 'dojo/request_report.html',
                   {'product_type': product_type,
@@ -743,7 +744,7 @@ def get_findings(request):
              'false_positive', 'inactive']
     # request.path = url
     obj_name = obj_id = view = query = None
-    path_items = list(filter(None, re.split('/|\?', url))) # noqa W605
+    path_items = list(filter(None, re.split(r'/|\?', url)))
 
     try:
         finding_index = path_items.index('finding')
@@ -806,7 +807,12 @@ def get_findings(request):
             user_has_permission_or_403(request.user, obj, Permissions.Test_View)
 
     request.GET = QueryDict(query)
-    findings = get_filtered_findings(request, pid, eid, tid, filter_name).qs
+    list_findings = BaseListFindings(
+        filter_name=filter_name,
+        product_id=pid,
+        engagement_id=eid,
+        test_id=tid)
+    findings = list_findings.get_fully_filtered_findings(request).qs
 
     return findings, obj
 
@@ -820,7 +826,8 @@ def get_excludes():
     return ['SEVERITIES', 'age', 'github_issue', 'jira_issue', 'objects', 'risk_acceptance',
     'test__engagement__product__authorized_group', 'test__engagement__product__member',
     'test__engagement__product__prod_type__authorized_group', 'test__engagement__product__prod_type__member',
-    'unsaved_endpoints']
+    'unsaved_endpoints', 'unsaved_vulnerability_ids', 'unsaved_files', 'unsaved_request', 'unsaved_response',
+    'unsaved_tags', 'vulnerability_ids', 'cve']
 
 
 def get_foreign_keys():
@@ -828,21 +835,32 @@ def get_foreign_keys():
         'mitigated_by', 'reporter', 'review_requested_by', 'sonarqube_issue', 'test']
 
 
+def get_attributes():
+    return ["sla_age", "sla_deadline", "sla_days_remaining"]
+
+
 def csv_export(request):
     findings, obj = get_findings(request)
-
     response = HttpResponse(content_type='text/csv')
     response['Content-Disposition'] = 'attachment; filename=findings.csv'
-
     writer = csv.writer(response)
-
+    allowed_attributes = get_attributes()
+    excludes_list = get_excludes()
+    allowed_foreign_keys = get_attributes()
     first_row = True
+
     for finding in findings:
         if first_row:
             fields = []
             for key in dir(finding):
-                if key not in get_excludes() and not callable(getattr(finding, key)) and not key.startswith('_'):
-                    fields.append(key)
+                try:
+                    if key not in excludes_list and (not callable(getattr(finding, key)) or key in allowed_attributes) and not key.startswith('_'):
+                        if callable(getattr(finding, key)) and key not in allowed_attributes:
+                            continue
+                        fields.append(key)
+                except Exception as exc:
+                    logger.debug('Error in attribute: ' + str(exc))
+                    continue
             fields.append('test')
             fields.append('found_by')
             fields.append('engagement_id')
@@ -850,6 +868,7 @@ def csv_export(request):
             fields.append('product_id')
             fields.append('product')
             fields.append('endpoints')
+            fields.append('vulnerability_ids')
 
             writer.writerow(fields)
 
@@ -857,13 +876,23 @@ def csv_export(request):
         if not first_row:
             fields = []
             for key in dir(finding):
-                if key not in get_excludes() and not callable(getattr(finding, key)) and not key.startswith('_'):
-                    value = finding.__dict__.get(key)
-                    if key in get_foreign_keys() and getattr(finding, key):
-                        value = str(getattr(finding, key))
-                    if value and isinstance(value, str):
-                        value = value.replace('\n', ' NEWLINE ').replace('\r', '')
-                    fields.append(value)
+                try:
+                    if key not in excludes_list and (not callable(getattr(finding, key)) or key in allowed_attributes) and not key.startswith('_'):
+                        if not callable(getattr(finding, key)):
+                            value = finding.__dict__.get(key)
+                        if (key in allowed_foreign_keys or key in allowed_attributes) and getattr(finding, key):
+                            if callable(getattr(finding, key)):
+                                func = getattr(finding, key)
+                                result = func()
+                                value = result
+                            else:
+                                value = str(getattr(finding, key))
+                        if value and isinstance(value, str):
+                            value = value.replace('\n', ' NEWLINE ').replace('\r', '')
+                        fields.append(value)
+                except Exception as exc:
+                    logger.debug('Error in attribute: ' + str(exc))
+                    continue
             fields.append(finding.test.title)
             fields.append(finding.test.test_type.name)
             fields.append(finding.test.engagement.id)
@@ -883,6 +912,20 @@ def csv_export(request):
                 endpoint_value = endpoint_value[:-2]
             fields.append(endpoint_value)
 
+            vulnerability_ids_value = ''
+            num_vulnerability_ids = 0
+            for vulnerability_id in finding.vulnerability_ids:
+                num_vulnerability_ids += 1
+                if num_vulnerability_ids > 5:
+                    vulnerability_ids_value += '...'
+                    break
+                vulnerability_ids_value += f'{str(vulnerability_id)}; '
+            if finding.cve and vulnerability_ids_value.find(finding.cve) < 0:
+                vulnerability_ids_value += finding.cve
+            if vulnerability_ids_value.endswith('; '):
+                vulnerability_ids_value = vulnerability_ids_value[:-2]
+            fields.append(vulnerability_ids_value)
+
             writer.writerow(fields)
 
     return response
@@ -890,23 +933,30 @@ def csv_export(request):
 
 def excel_export(request):
     findings, obj = get_findings(request)
-
     workbook = Workbook()
     workbook.iso_dates = True
     worksheet = workbook.active
     worksheet.title = 'Findings'
-
     font_bold = Font(bold=True)
+    allowed_attributes = get_attributes()
+    excludes_list = get_excludes()
+    allowed_foreign_keys = get_attributes()
 
     row_num = 1
     for finding in findings:
         if row_num == 1:
             col_num = 1
             for key in dir(finding):
-                if key not in get_excludes() and not callable(getattr(finding, key)) and not key.startswith('_'):
-                    cell = worksheet.cell(row=row_num, column=col_num, value=key)
-                    cell.font = font_bold
-                    col_num += 1
+                try:
+                    if key not in excludes_list and (not callable(getattr(finding, key)) or key in allowed_attributes) and not key.startswith('_'):
+                        if callable(getattr(finding, key)) and key not in allowed_attributes:
+                            continue
+                        cell = worksheet.cell(row=row_num, column=col_num, value=key)
+                        cell.font = font_bold
+                        col_num += 1
+                except Exception as exc:
+                    logger.debug('Error in attribute: ' + str(exc))
+                    continue
             cell = worksheet.cell(row=row_num, column=col_num, value='found_by')
             cell.font = font_bold
             col_num += 1
@@ -924,19 +974,32 @@ def excel_export(request):
             col_num += 1
             cell = worksheet.cell(row=row_num, column=col_num, value='endpoints')
             cell.font = font_bold
+            col_num += 1
+            cell = worksheet.cell(row=row_num, column=col_num, value='vulnerability_ids')
+            cell.font = font_bold
 
             row_num = 2
         if row_num > 1:
             col_num = 1
             for key in dir(finding):
-                if key not in get_excludes() and not callable(getattr(finding, key)) and not key.startswith('_'):
-                    value = finding.__dict__.get(key)
-                    if key in get_foreign_keys() and getattr(finding, key):
-                        value = str(getattr(finding, key))
-                    if value and isinstance(value, datetime):
-                        value = value.replace(tzinfo=None)
-                    worksheet.cell(row=row_num, column=col_num, value=value)
-                    col_num += 1
+                try:
+                    if key not in excludes_list and (not callable(getattr(finding, key)) or key in allowed_attributes) and not key.startswith('_'):
+                        if not callable(getattr(finding, key)):
+                            value = finding.__dict__.get(key)
+                        if (key in allowed_foreign_keys or key in allowed_attributes) and getattr(finding, key):
+                            if callable(getattr(finding, key)):
+                                func = getattr(finding, key)
+                                result = func()
+                                value = result
+                            else:
+                                value = str(getattr(finding, key))
+                        if value and isinstance(value, datetime):
+                            value = value.replace(tzinfo=None)
+                        worksheet.cell(row=row_num, column=col_num, value=value)
+                        col_num += 1
+                except Exception as exc:
+                    logger.debug('Error in attribute: ' + str(exc))
+                    continue
             worksheet.cell(row=row_num, column=col_num, value=finding.test.test_type.name)
             col_num += 1
             worksheet.cell(row=row_num, column=col_num, value=finding.test.engagement.id)
@@ -959,6 +1022,21 @@ def excel_export(request):
             if endpoint_value.endswith('; \n'):
                 endpoint_value = endpoint_value[:-3]
             worksheet.cell(row=row_num, column=col_num, value=endpoint_value)
+            col_num += 1
+
+            vulnerability_ids_value = ''
+            num_vulnerability_ids = 0
+            for vulnerability_id in finding.vulnerability_ids:
+                num_vulnerability_ids += 1
+                if num_vulnerability_ids > 5:
+                    vulnerability_ids_value += '...'
+                    break
+                vulnerability_ids_value += f'{str(vulnerability_id)}; \n'
+            if finding.cve and vulnerability_ids_value.find(finding.cve) < 0:
+                vulnerability_ids_value += finding.cve
+            if vulnerability_ids_value.endswith('; \n'):
+                vulnerability_ids_value = vulnerability_ids_value[:-3]
+            worksheet.cell(row=row_num, column=col_num, value=vulnerability_ids_value)
 
         row_num += 1
 

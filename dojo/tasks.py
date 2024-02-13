@@ -5,7 +5,7 @@ from django.conf import settings
 from django.urls import reverse
 from dojo.celery import app
 from celery.utils.log import get_task_logger
-from dojo.models import Alerts, Product, Finding, Engagement, System_Settings, User
+from dojo.models import Alerts, Product, Engagement, Finding, System_Settings, User
 from django.utils import timezone
 from dojo.utils import calculate_grade
 from dojo.utils import sla_compute_and_notify
@@ -154,6 +154,7 @@ def async_sla_compute_and_notify_task(*args, **kwargs):
         if system_settings.enable_finding_sla:
             sla_compute_and_notify(*args, **kwargs)
     except Exception as e:
+        logger.exception(e)
         logger.error("An unexpected error was thrown calling the SLA code: {}".format(e))
 
 
